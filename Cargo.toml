@@ -1,0 +1,28 @@
+[package]
+name = "physarum-lab"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "physarum"
+path = "src/main.rs"
+
+[dependencies]
+
+# Une fonctionnalité par étape : ses tests portent #[cfg_attr(not(feature = "etape-<n>"), ignore)] tant qu'elle n'est
+# pas dans `default`. La vague du code d'une étape ajoute son nom à `default`, et rien d'autre ici.
+[features]
+default = []
+etape-0 = []
+etape-1 = []
+etape-2 = []
+etape-3 = []
+etape-4 = []
+etape-5 = []
+
+# Les tests de simulation (réseaux qui s'adaptent, solveur) sont lourds : le profil de test est optimisé. Les
+# vérifications de débordement restent actives. Ne pas le changer sans PR à part.
+[profile.dev]
+opt-level = 3

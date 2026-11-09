@@ -1,0 +1,32 @@
+# Rejoue la CI sur main après une fusion automatique. GitHub fusionne seul les PR lydite/ vertes, avec le jeton d'Actions,
+# et un événement causé par ce jeton ne lance aucun workflow : le push sur main ne déclenche donc pas ci.yml (vu sur les
+# PR 2 et 3 de ce dépôt). Ce workflow, lancé toutes les dix minutes, regarde si la tête de main a un run de ci.yml et, sinon,
+# le demande (workflow_dispatch, la seule voie que ce jeton ait le droit de déclencher). Il ne lit ni ne lance aucun code
+# de PR : pas de checkout, pas de pull_request_target. Un run rouge sur main est l'alarme ; le rejeu ne corrige rien.
+name: rejeu-main
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  rejouer:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          sha=$(gh api "repos/$REPO/commits/main" --jq .sha)
+          n=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$sha&per_page=1" --jq .total_count)
+          if [ "$n" = 0 ]; then
+            gh workflow run ci.yml --repo "$REPO" --ref main
+            echo "ci demandée sur $sha"
+          else
+            echo "main ($sha) a déjà $n run(s) de ci"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
