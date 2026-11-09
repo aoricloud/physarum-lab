@@ -135,14 +135,146 @@ pub enum ErreurSolveur {
 /// # Erreurs
 ///
 /// Celles de « Les vérifications », dans leur ordre : la première qui s'applique.
-#[allow(unused_variables)]
 pub fn pressions(
     graphe: &Graphe,
     conductances: &[f64],
     injections: &[f64],
     masse: usize,
 ) -> Result<Vec<f64>, ErreurSolveur> {
-    todo!()
+    let n = graphe.nb_noeuds();
+    let m = graphe.nb_aretes();
+    // 1. les longueurs
+    if conductances.len() != m || injections.len() != n {
+        return Err(ErreurSolveur::Taille);
+    }
+    // 2. la masse
+    if masse >= n {
+        return Err(ErreurSolveur::Masse);
+    }
+    // 3. les conductances
+    for (e, &g) in conductances.iter().enumerate() {
+        if !(g.is_finite() && g >= 0.0) {
+            return Err(ErreurSolveur::Conductance(e));
+        }
+    }
+    // 4. les injections (celle de la masse aussi)
+    for (i, &b) in injections.iter().enumerate() {
+        if !b.is_finite() {
+            return Err(ErreurSolveur::Injection(i));
+        }
+    }
+    // 5. le plus petit nœud qu'aucun chemin d'arêtes de conductance strictement positive ne relie à la masse
+    let mut vus = vec![false; n];
+    vus[masse] = true;
+    let mut pile = vec![masse];
+    while let Some(ici) = pile.pop() {
+        for &e in graphe.incidentes(ici) {
+            if conductances[e] > 0.0 {
+                let arete = graphe.aretes()[e];
+                let autre = if arete.a == ici { arete.b } else { arete.a };
+                if !vus[autre] {
+                    vus[autre] = true;
+                    pile.push(autre);
+                }
+            }
+        }
+    }
+    if let Some(i) = (0..n).find(|&i| !vus[i]) {
+        return Err(ErreurSolveur::Isole(i));
+    }
+
+    let nn = n - 1;
+    if nn == 0 {
+        return Ok(vec![0.0]);
+    }
+
+    // Le rang d'un nœud autre que la masse, et le nœud d'un rang.
+    let rang = |i: usize| if i < masse { i } else { i - 1 };
+    let noeud = |r: usize| if r < masse { r } else { r + 1 };
+
+    // Le profil : premier[i], le plus petit rang relié au rang i par une arête du graphe.
+    let mut premier: Vec<usize> = (0..nn).collect();
+    for arete in graphe.aretes() {
+        if arete.a != masse && arete.b != masse {
+            let ra = rang(arete.a);
+            let rb = rang(arete.b);
+            let (bas, haut) = if ra < rb { (ra, rb) } else { (rb, ra) };
+            if bas < premier[haut] {
+                premier[haut] = bas;
+            }
+        }
+    }
+
+    // La factorisation A = L · diag(d) · Lᵀ : la ligne i ne range que les colonnes de premier(i) à i - 1.
+    let mut l: Vec<Vec<f64>> = Vec::with_capacity(nn);
+    let mut d = vec![0.0_f64; nn];
+    for i in 0..nn {
+        let debut = premier[i];
+        let mut ligne = vec![0.0_f64; i - debut];
+        let sommet = noeud(i);
+        // La diagonale : toutes les arêtes du nœud, celles vers la masse comprises, par indice croissant.
+        let mut diagonale = 0.0_f64;
+        for &e in graphe.incidentes(sommet) {
+            let g = conductances[e];
+            diagonale += g;
+            let arete = graphe.aretes()[e];
+            let autre = if arete.a == sommet { arete.b } else { arete.a };
+            if autre != masse && g > 0.0 {
+                let j = rang(autre);
+                if j >= debut && j < i {
+                    ligne[j - debut] = -g;
+                }
+            }
+        }
+        for j in debut..i {
+            let mut t = ligne[j - debut];
+            let debut_j = premier[j];
+            let bas = if debut_j > debut { debut_j } else { debut };
+            for k in bas..j {
+                t -= (ligne[k - debut] * d[k]) * l[j][k - debut_j];
+            }
+            ligne[j - debut] = t / d[j];
+        }
+        let mut pivot = diagonale;
+        for k in debut..i {
+            pivot -= (ligne[k - debut] * d[k]) * ligne[k - debut];
+        }
+        if !(pivot.is_finite() && pivot > 0.0) {
+            return Err(ErreurSolveur::Pivot(sommet));
+        }
+        d[i] = pivot;
+        l.push(ligne);
+    }
+
+    // La descente.
+    let mut y = vec![0.0_f64; nn];
+    for i in 0..nn {
+        let mut t = injections[noeud(i)] + 0.0;
+        let debut = premier[i];
+        for k in debut..i {
+            t -= l[i][k - debut] * y[k];
+        }
+        y[i] = t;
+    }
+
+    // La diagonale.
+    let mut x: Vec<f64> = y.iter().zip(d.iter()).map(|(y, d)| y / d).collect();
+
+    // La remontée, de la dernière ligne à la première.
+    for k in (1..nn).rev() {
+        let debut = premier[k];
+        for i in debut..k {
+            x[i] -= l[k][i - debut] * x[k];
+        }
+    }
+
+    let mut p = vec![0.0_f64; n];
+    for i in 0..n {
+        if i != masse {
+            p[i] = x[rang(i)];
+        }
+    }
+    Ok(p)
 }
 
 /// Le flux de chaque arête, dans l'ordre des indices : `Q[e] = conductances[e] * (pressions[a] - pressions[b])`, où
@@ -151,7 +283,13 @@ pub fn pressions(
 /// # Panique
 ///
 /// Si `conductances.len()` n'est pas le nombre d'arêtes ou `pressions.len()` le nombre de nœuds.
-#[allow(unused_variables)]
 pub fn flux(graphe: &Graphe, conductances: &[f64], pressions: &[f64]) -> Vec<f64> {
-    todo!()
+    assert_eq!(conductances.len(), graphe.nb_aretes(), "une conductance par arête");
+    assert_eq!(pressions.len(), graphe.nb_noeuds(), "une pression par nœud");
+    graphe
+        .aretes()
+        .iter()
+        .enumerate()
+        .map(|(e, arete)| conductances[e] * (pressions[arete.a] - pressions[arete.b]))
+        .collect()
 }
