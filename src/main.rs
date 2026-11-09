@@ -17,6 +17,116 @@
 //!   le numéro de la ligne de cette directive) ; celui d'une grille manquante contient le mot `grille`.
 //! - Code de sortie 0 quand tout est écrit.
 
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
+
+use physarum_lab::lancer::{ErreurLancer, lancer};
+use physarum_lab::scenario::{ErreurLecture, lire_scenario};
+
 fn main() -> std::process::ExitCode {
-    todo!()
+    match executer(std::env::args_os().skip(1).collect()) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("physarum : {message}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// Les trois choses qu'un lancer demande, une fois les arguments vérifiés.
+struct Demande {
+    scenario: PathBuf,
+    graine: u64,
+    sortie: PathBuf,
+}
+
+/// Vérifie et range les arguments (le nom du programme excepté).
+fn lire_arguments(args: &[OsString]) -> Result<Demande, String> {
+    let Some(commande) = args.first() else {
+        return Err("aucune commande : attendu `lancer`".to_owned());
+    };
+    if commande.as_os_str() != OsStr::new("lancer") {
+        return Err(format!("commande inconnue : {}", commande.to_string_lossy()));
+    }
+    let mut scenario: Option<PathBuf> = None;
+    let mut graine: Option<u64> = None;
+    let mut sortie: Option<PathBuf> = None;
+    let mut rang = 1;
+    while rang < args.len() {
+        let argument = &args[rang];
+        if argument.as_os_str() == OsStr::new("--graine") {
+            if graine.is_some() {
+                return Err("l'option --graine est répétée".to_owned());
+            }
+            let valeur = args.get(rang + 1).ok_or_else(|| "l'option --graine est sans valeur".to_owned())?;
+            graine = Some(graine_lue(valeur)?);
+            rang += 2;
+        } else if argument.as_os_str() == OsStr::new("--sortie") {
+            if sortie.is_some() {
+                return Err("l'option --sortie est répétée".to_owned());
+            }
+            let valeur = args.get(rang + 1).ok_or_else(|| "l'option --sortie est sans valeur".to_owned())?;
+            sortie = Some(PathBuf::from(valeur));
+            rang += 2;
+        } else if argument.to_string_lossy().starts_with('-') {
+            return Err(format!("option inconnue : {}", argument.to_string_lossy()));
+        } else if scenario.is_some() {
+            return Err(format!("scénario en trop : {}", argument.to_string_lossy()));
+        } else {
+            scenario = Some(PathBuf::from(argument));
+            rang += 1;
+        }
+    }
+    Ok(Demande {
+        scenario: scenario.ok_or_else(|| "le scénario manque".to_owned())?,
+        graine: graine.ok_or_else(|| "l'option --graine manque".to_owned())?,
+        sortie: sortie.ok_or_else(|| "l'option --sortie manque".to_owned())?,
+    })
+}
+
+/// La graine : des chiffres décimaux ASCII seulement (ni signe ni blanc), tenant dans un `u64`.
+fn graine_lue(valeur: &OsString) -> Result<u64, String> {
+    let texte = valeur.to_str().ok_or_else(|| "la graine n'est pas écrite en chiffres décimaux".to_owned())?;
+    if texte.is_empty() || !texte.bytes().all(|octet| octet.is_ascii_digit()) {
+        return Err(format!("graine mal écrite : {}", valeur.to_string_lossy()));
+    }
+    texte.parse::<u64>().map_err(|_| format!("graine hors des 64 bits : {texte}"))
+}
+
+/// Lit le scénario, le lance, puis écrit les trois sorties (et rien avant que tout ait réussi).
+fn executer(args: Vec<OsString>) -> Result<(), String> {
+    let demande = lire_arguments(&args)?;
+    let texte = std::fs::read_to_string(&demande.scenario)
+        .map_err(|erreur| format!("scénario illisible ({}) : {erreur}", demande.scenario.display()))?;
+    let scenario = lire_scenario(&texte).map_err(|erreur| message_de_lecture(&demande.scenario, erreur))?;
+    let sortie = lancer(&scenario, demande.graine).map_err(|erreur| message_de_lancer(&demande.scenario, erreur))?;
+    std::fs::create_dir_all(&demande.sortie)
+        .map_err(|erreur| format!("dossier de sortie impossible à créer ({}) : {erreur}", demande.sortie.display()))?;
+    ecrire(&demande.sortie.join("empreinte.txt"), format!("{}\n", sortie.empreinte).as_bytes())?;
+    ecrire(&demande.sortie.join("mesures.csv"), sortie.mesures.as_bytes())?;
+    ecrire(&demande.sortie.join("apercu.png"), &sortie.apercu)
+}
+
+/// Le message d'une erreur de lecture : le numéro de la ligne fautive, ou le nom de la directive manquante.
+fn message_de_lecture(chemin: &Path, erreur: ErreurLecture) -> String {
+    match erreur {
+        ErreurLecture::LigneInvalide(ligne) => format!("scénario {} : ligne {ligne} invalide", chemin.display()),
+        ErreurLecture::Manquante(nom) => {
+            format!("scénario {} : directive obligatoire manquante : {nom}", chemin.display())
+        }
+    }
+}
+
+/// Le message d'une erreur de lancer : le numéro de la directive incomprise.
+fn message_de_lancer(chemin: &Path, erreur: ErreurLancer) -> String {
+    match erreur {
+        ErreurLancer::DirectiveInconnue(ligne) => {
+            format!("scénario {} : directive inconnue à la ligne {ligne}", chemin.display())
+        }
+    }
+}
+
+/// Écrit un fichier de sortie, en remplaçant celui qui existe.
+fn ecrire(chemin: &Path, contenu: &[u8]) -> Result<(), String> {
+    std::fs::write(chemin, contenu).map_err(|erreur| format!("écriture impossible ({}) : {erreur}", chemin.display()))
 }
