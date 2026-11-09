@@ -109,29 +109,84 @@ impl Graphe {
     ///   un négatif, un infini, NaN sont refusés) ; ou une arête **de rang plus petit** dans la liste relie la même
     ///   paire de nœuds, dans un sens ou dans l'autre (c'est la seconde des deux qui est fautive, que la première soit
     ///   elle-même fautive ou non).
-    #[allow(unused_variables)]
     pub fn new(noeuds: Vec<Noeud>, aretes: Vec<Arete>) -> Result<Graphe, ErreurGraphe> {
-        todo!()
+        if noeuds.is_empty() {
+            return Err(ErreurGraphe::Vide);
+        }
+        let n = noeuds.len();
+        // Le plus petit rang fautif de la liste donnée, s'il y en a un.
+        let mut faute: Option<usize> = None;
+        let mut paires: Vec<((usize, usize), usize)> = Vec::with_capacity(aretes.len());
+        for (rang, arete) in aretes.iter().enumerate() {
+            let fautive = arete.a == arete.b
+                || arete.a >= n
+                || arete.b >= n
+                || !(arete.longueur.is_finite() && arete.longueur > 0.0)
+                || !(arete.cout.is_finite() && arete.cout > 0.0);
+            if fautive && faute.is_none_or(|premier| rang < premier) {
+                faute = Some(rang);
+            }
+            paires.push(((arete.a.min(arete.b), arete.a.max(arete.b)), rang));
+        }
+        // Une arête double : c'est la seconde de la paire qui est fautive, que la première soit fautive ou non.
+        paires.sort_unstable();
+        for paire in paires.windows(2) {
+            if paire[0].0 == paire[1].0 && faute.is_none_or(|premier| paire[1].1 < premier) {
+                faute = Some(paire[1].1);
+            }
+        }
+        if let Some(rang) = faute {
+            return Err(ErreurGraphe::Arete(rang));
+        }
+
+        // L'ordre canonique : chaque arête rangée avec `a < b`, puis triée par `(a, b)`.
+        let mut aretes = aretes;
+        for arete in &mut aretes {
+            if arete.a > arete.b {
+                std::mem::swap(&mut arete.a, &mut arete.b);
+            }
+        }
+        aretes.sort_unstable_by_key(|arete| (arete.a, arete.b));
+
+        // Les incidences : le comptage, les débuts, puis le remplissage dans l'ordre des indices.
+        let mut debuts = vec![0_usize; n + 1];
+        for arete in &aretes {
+            debuts[arete.a + 1] += 1;
+            debuts[arete.b + 1] += 1;
+        }
+        for i in 0..n {
+            debuts[i + 1] += debuts[i];
+        }
+        let mut incidences = vec![0_usize; 2 * aretes.len()];
+        let mut curseurs = debuts.clone();
+        for (rang, arete) in aretes.iter().enumerate() {
+            incidences[curseurs[arete.a]] = rang;
+            curseurs[arete.a] += 1;
+            incidences[curseurs[arete.b]] = rang;
+            curseurs[arete.b] += 1;
+        }
+
+        Ok(Graphe { noeuds, aretes, debuts, incidences })
     }
 
     /// Le nombre de nœuds.
     pub fn nb_noeuds(&self) -> usize {
-        todo!()
+        self.noeuds.len()
     }
 
     /// Le nombre d'arêtes.
     pub fn nb_aretes(&self) -> usize {
-        todo!()
+        self.aretes.len()
     }
 
     /// Les nœuds, dans l'ordre de leurs indices.
     pub fn noeuds(&self) -> &[Noeud] {
-        todo!()
+        &self.noeuds
     }
 
     /// Les arêtes, dans l'ordre canonique (celui de leurs indices) ; chacune a `a < b`.
     pub fn aretes(&self) -> &[Arete] {
-        todo!()
+        &self.aretes
     }
 
     /// Les indices des arêtes dont `noeud` est un bout, **par indice croissant**. Vide pour un nœud sans arête.
@@ -139,32 +194,70 @@ impl Graphe {
     /// # Panique
     ///
     /// Si `noeud` n'est pas un indice de nœud.
-    #[allow(unused_variables)]
     pub fn incidentes(&self, noeud: usize) -> &[usize] {
-        todo!()
+        assert!(noeud < self.noeuds.len(), "le nœud {noeud} n'est pas dans le graphe");
+        &self.incidences[self.debuts[noeud]..self.debuts[noeud + 1]]
     }
 
     /// L'indice de l'arête qui relie `a` et `b` (dans un sens ou dans l'autre), ou `None` s'il n'y en a pas, si
     /// `a == b`, ou si l'un des deux n'est pas un indice de nœud. Ne panique jamais.
-    #[allow(unused_variables)]
     pub fn arete_entre(&self, a: usize, b: usize) -> Option<usize> {
-        todo!()
+        let n = self.noeuds.len();
+        if a >= n || b >= n || a == b {
+            return None;
+        }
+        let (a, b) = (a.min(b), a.max(b));
+        self.aretes.binary_search_by(|arete| (arete.a, arete.b).cmp(&(a, b))).ok()
     }
 
     /// Vrai si tout nœud se joint à tout autre en suivant des arêtes (un graphe d'un seul nœud est connexe).
     pub fn est_connexe(&self) -> bool {
-        todo!()
+        let n = self.noeuds.len();
+        let mut vus = vec![false; n];
+        let mut pile = vec![0_usize];
+        vus[0] = true;
+        let mut nb_vus = 1;
+        while let Some(noeud) = pile.pop() {
+            for &rang in self.incidentes(noeud) {
+                let arete = &self.aretes[rang];
+                let autre = if arete.a == noeud { arete.b } else { arete.a };
+                if !vus[autre] {
+                    vus[autre] = true;
+                    nb_vus += 1;
+                    pile.push(autre);
+                }
+            }
+        }
+        nb_vus == n
     }
 
     /// La somme des longueurs des arêtes : on part de `0.0` et on ajoute la longueur de chaque arête **dans l'ordre des
     /// indices** (une somme de flottants dépend de son ordre : ni tri, ni regroupement). `0.0` sans arête.
     pub fn longueur_totale(&self) -> f64 {
-        todo!()
+        let mut total = 0.0;
+        for arete in &self.aretes {
+            total += arete.longueur;
+        }
+        total
     }
 
     /// L'écriture canonique du graphe (voir « L'écriture canonique » dans la documentation du module).
     pub fn octets(&self) -> Vec<u8> {
-        todo!()
+        let mut octets = Vec::with_capacity(8 + 12 * self.noeuds.len() + 24 * self.aretes.len());
+        octets.extend_from_slice(&(self.noeuds.len() as u32).to_le_bytes());
+        for noeud in &self.noeuds {
+            octets.extend_from_slice(&noeud.x.to_le_bytes());
+            octets.extend_from_slice(&noeud.y.to_le_bytes());
+            octets.extend_from_slice(&noeud.etage.to_le_bytes());
+        }
+        octets.extend_from_slice(&(self.aretes.len() as u32).to_le_bytes());
+        for arete in &self.aretes {
+            octets.extend_from_slice(&(arete.a as u32).to_le_bytes());
+            octets.extend_from_slice(&(arete.b as u32).to_le_bytes());
+            octets.extend_from_slice(&arete.longueur.to_bits().to_le_bytes());
+            octets.extend_from_slice(&arete.cout.to_bits().to_le_bytes());
+        }
+        octets
     }
 }
 
@@ -200,9 +293,12 @@ impl Grille {
     /// # Panique
     ///
     /// Si `x >= largeur`, `y >= hauteur` ou `etage >= etages`.
-    #[allow(unused_variables)]
     pub fn indice(&self, x: u32, y: u32, etage: u32) -> usize {
-        todo!()
+        assert!(
+            x < self.largeur && y < self.hauteur && etage < self.etages,
+            "le nœud ({x}, {y}, {etage}) n'est pas dans la grille"
+        );
+        (y as usize * self.largeur as usize + x as usize) * self.etages as usize + etage as usize
     }
 
     /// Le graphe de la grille (voir « La grille » dans la documentation du module).
@@ -212,6 +308,58 @@ impl Grille {
     /// `ErreurGraphe::Grille` si `largeur`, `hauteur` ou `etages` vaut 0, ou si `longueur_verticale` ou `cout_vertical`
     /// n'est pas un nombre fini strictement positif (même quand il n'y a qu'un étage).
     pub fn graphe(&self) -> Result<Graphe, ErreurGraphe> {
-        todo!()
+        let positif = |valeur: f64| valeur.is_finite() && valeur > 0.0;
+        if self.largeur == 0
+            || self.hauteur == 0
+            || self.etages == 0
+            || !positif(self.longueur_verticale)
+            || !positif(self.cout_vertical)
+        {
+            return Err(ErreurGraphe::Grille);
+        }
+        let (largeur, hauteur, etages) = (self.largeur as usize, self.hauteur as usize, self.etages as usize);
+        let indice = |x: usize, y: usize, etage: usize| (y * largeur + x) * etages + etage;
+        let mut noeuds = Vec::with_capacity(largeur * hauteur * etages);
+        for y in 0..hauteur {
+            for x in 0..largeur {
+                for etage in 0..etages {
+                    noeuds.push(Noeud { x: x as i32, y: y as i32, etage: etage as u32 });
+                }
+            }
+        }
+        let racine_de_deux = 2.0_f64.sqrt();
+        let mut aretes = Vec::new();
+        for etage in 0..etages {
+            for y in 0..hauteur {
+                for x in 0..largeur {
+                    let ici = indice(x, y, etage);
+                    if x + 1 < largeur {
+                        aretes.push(Arete { a: ici, b: indice(x + 1, y, etage), longueur: 1.0, cout: 1.0 });
+                    }
+                    if y + 1 < hauteur {
+                        aretes.push(Arete { a: ici, b: indice(x, y + 1, etage), longueur: 1.0, cout: 1.0 });
+                    }
+                    if self.voisinage == Voisinage::Huit && y + 1 < hauteur {
+                        if x > 0 {
+                            let voisin = indice(x - 1, y + 1, etage);
+                            aretes.push(Arete { a: ici, b: voisin, longueur: racine_de_deux, cout: racine_de_deux });
+                        }
+                        if x + 1 < largeur {
+                            let voisin = indice(x + 1, y + 1, etage);
+                            aretes.push(Arete { a: ici, b: voisin, longueur: racine_de_deux, cout: racine_de_deux });
+                        }
+                    }
+                    if etage + 1 < etages {
+                        aretes.push(Arete {
+                            a: ici,
+                            b: indice(x, y, etage + 1),
+                            longueur: self.longueur_verticale,
+                            cout: self.cout_vertical,
+                        });
+                    }
+                }
+            }
+        }
+        Graphe::new(noeuds, aretes)
     }
 }
