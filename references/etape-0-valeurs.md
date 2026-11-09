@@ -141,6 +141,7 @@ Source : la documentation de `src/main.rs`. Les empreintes sont celles de V-LANC
 | V-BIN-05 | toute erreur d'arguments ou de fichier : code 1, un message qui n'est pas une panique, rien de créé | doc |
 | V-BIN-06 | un scénario refusé : code 1, `ligne <n>` ou `grille` dans le message, rien d'écrit, et un dossier de sortie absent n'est pas créé | doc |
 | V-BIN-07 | `references/grille-graine-1.empreinte` (régression) | produit par le binaire à la vague du code |
+| V-BIN-08 | quand un des trois fichiers ne peut pas être écrit (un dossier porte son nom dans le dossier de sortie) : code 1, un message qui n'est pas une panique, et aucun fichier écrit pendant ce lancer ne reste | doc de `src/main.rs` (« une écriture qui échoue ») ; test `etape_0_ecriture.rs`, ajouté après la campagne de fautes du juge |
 
 ## alea (PCG32, graine et flux)
 
