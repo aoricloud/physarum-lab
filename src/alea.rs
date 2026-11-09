@@ -43,29 +43,41 @@ impl Alea {
     /// Amorce un générateur avec une graine et un flux, exactement comme `pcg32_srandom_r(initstate = graine,
     /// initseq = flux)` de la référence (voir « Amorcer » dans la documentation du module). Deux flux différents
     /// donnent deux suites différentes pour la même graine.
-    #[allow(unused_variables)]
     pub fn avec_flux(graine: u64, flux: u64) -> Alea {
-        todo!()
+        let mut alea = Alea { etat: 0, increment: (flux << 1) | 1 };
+        alea.avancer();
+        alea.etat = alea.etat.wrapping_add(graine);
+        alea.avancer();
+        alea
     }
 
     /// Amorce un générateur avec une graine et le flux [`FLUX_PAR_DEFAUT`] (54) : `Alea::new(g)` est exactement
     /// `Alea::avec_flux(g, 54)`.
-    #[allow(unused_variables)]
     pub fn new(graine: u64) -> Alea {
-        todo!()
+        Alea::avec_flux(graine, FLUX_PAR_DEFAUT)
+    }
+
+    /// Avance d'une étape et rend l'ancien état (voir « Avancer » dans la documentation du module).
+    fn avancer(&mut self) -> u64 {
+        let ancien = self.etat;
+        self.etat = ancien.wrapping_mul(6364136223846793005).wrapping_add(self.increment);
+        ancien
     }
 
     /// Un tirage de 32 bits : avance d'une étape et rend la sortie XSH-RR de l'ancien état (voir « L'algorithme, à la
     /// lettre » dans la documentation du module). Pour la graine 42 et le flux 54, les six premiers tirages sont ceux
     /// du vecteur officiel.
     pub fn suivant(&mut self) -> u32 {
-        todo!()
+        let ancien = self.avancer();
+        sortie(ancien)
     }
 
     /// Un tirage de 64 bits fait de **deux** tirages de 32 bits : le premier donne les 32 bits de poids fort, le
     /// second les 32 bits de poids faible (`(premier << 32) | second`).
     pub fn suivant_u64(&mut self) -> u64 {
-        todo!()
+        let premier = self.suivant();
+        let second = self.suivant();
+        (u64::from(premier) << 32) | u64::from(second)
     }
 
     /// Un entier uniforme dans `0..n`, sans biais, comme `pcg32_boundedrand_r` de la référence : `seuil =
@@ -76,21 +88,36 @@ impl Alea {
     /// # Panique
     ///
     /// Si `n` vaut 0.
-    #[allow(unused_variables)]
     pub fn borne(&mut self, n: u32) -> u32 {
-        todo!()
+        let seuil = n.wrapping_neg() % n;
+        loop {
+            let r = self.suivant();
+            if r >= seuil {
+                return r % n;
+            }
+        }
     }
 
     /// Un flottant uniforme dans `[0, 1)` : `(suivant_u64() >> 11) as f64 * 2^-53`. Il consomme **deux** tirages de
     /// 32 bits ; c'est un multiple exact de 2^-53 (aucun arrondi), donc au plus `1 - 2^-53`.
     pub fn suivant_f64(&mut self) -> f64 {
-        todo!()
+        (self.suivant_u64() >> 11) as f64 * (1.0 / 9007199254740992.0)
     }
 
     /// L'écriture canonique de l'état : 16 octets, `etat` en `u64` petit-boutiste (octets 0 à 7) puis `increment` en
     /// `u64` petit-boutiste (octets 8 à 15). Pour la graine 42 et le flux 54, juste après l'amorçage, l'incrément
     /// vaut `(54 << 1) | 1 = 109` (octet 8 : `0x6D`, les octets 9 à 15 : zéro).
     pub fn octets(&self) -> [u8; 16] {
-        todo!()
+        let mut octets = [0_u8; 16];
+        octets[0..8].copy_from_slice(&self.etat.to_le_bytes());
+        octets[8..16].copy_from_slice(&self.increment.to_le_bytes());
+        octets
     }
+}
+
+/// La sortie XSH-RR 32 bits calculée sur un état (voir « Sortie 32 bits » dans la documentation du module).
+fn sortie(ancien: u64) -> u32 {
+    let xorshifted = (((ancien >> 18) ^ ancien) >> 27) as u32;
+    let rot = (ancien >> 59) as u32;
+    xorshifted.rotate_right(rot)
 }
