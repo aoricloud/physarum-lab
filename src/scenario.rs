@@ -38,7 +38,7 @@
 //! mais qu'aucune `grille` n'a été donnée (fichier vide, que des commentaires, que d'autres directives, même
 //! `voisinage` ou `etages`), l'erreur est `ErreurLecture::Manquante("grille")`.
 
-use crate::graphe::Grille;
+use crate::graphe::{Grille, Voisinage};
 
 /// La borne haute de `largeur` et de `hauteur` d'une `grille`.
 pub const COTE_MAX: u32 = 256;
@@ -80,17 +80,139 @@ pub enum ErreurLecture {
 }
 
 /// Lit un texte de scénario (voir la documentation du module pour le format et les erreurs).
-#[allow(unused_variables)]
 pub fn lire_scenario(texte: &str) -> Result<Scenario, ErreurLecture> {
-    todo!()
+    let mut grille: Option<(u32, u32)> = None;
+    let mut voisinage: Option<Voisinage> = None;
+    let mut etages: Option<(u32, f64, f64)> = None;
+    let mut directives: Vec<Directive> = Vec::new();
+
+    for (rang, brute) in texte.split('\n').enumerate() {
+        let ligne = rang + 1;
+        // Un seul `\r` en fin de ligne est retiré ; les blancs de bord sont l'espace et la tabulation seuls.
+        let contenu = brute.strip_suffix('\r').unwrap_or(brute).trim_matches([' ', '\t']);
+        if contenu.is_empty() || contenu.starts_with('#') {
+            continue;
+        }
+        let mut champs = contenu.split([' ', '\t']).filter(|champ| !champ.is_empty());
+        let nom = champs.next().expect("un contenu non vide a un premier champ");
+        if !nom_valide(nom) {
+            return Err(ErreurLecture::LigneInvalide(ligne));
+        }
+        let args: Vec<String> = champs.map(str::to_owned).collect();
+        match nom {
+            "grille" => {
+                if grille.is_some() || args.len() != 2 {
+                    return Err(ErreurLecture::LigneInvalide(ligne));
+                }
+                let Some(largeur) = cote(&args[0]) else {
+                    return Err(ErreurLecture::LigneInvalide(ligne));
+                };
+                let Some(hauteur) = cote(&args[1]) else {
+                    return Err(ErreurLecture::LigneInvalide(ligne));
+                };
+                grille = Some((largeur, hauteur));
+            }
+            "voisinage" => {
+                if voisinage.is_some() || args.len() != 1 {
+                    return Err(ErreurLecture::LigneInvalide(ligne));
+                }
+                voisinage = Some(match args[0].as_str() {
+                    "4" => Voisinage::Quatre,
+                    "8" => Voisinage::Huit,
+                    _ => return Err(ErreurLecture::LigneInvalide(ligne)),
+                });
+            }
+            "etages" => {
+                if etages.is_some() || args.len() != 3 {
+                    return Err(ErreurLecture::LigneInvalide(ligne));
+                }
+                let Some(nombre) = entier_u64(&args[0]).filter(|v| (1..=u64::from(ETAGES_MAX)).contains(v)) else {
+                    return Err(ErreurLecture::LigneInvalide(ligne));
+                };
+                let Some(longueur) = flottant_fini(&args[1]).filter(|v| *v > 0.0) else {
+                    return Err(ErreurLecture::LigneInvalide(ligne));
+                };
+                let Some(cout) = flottant_fini(&args[2]).filter(|v| *v > 0.0) else {
+                    return Err(ErreurLecture::LigneInvalide(ligne));
+                };
+                etages = Some((nombre as u32, longueur, cout));
+            }
+            _ => directives.push(Directive { ligne, nom: nom.to_owned(), args }),
+        }
+    }
+
+    let (largeur, hauteur) = grille.ok_or(ErreurLecture::Manquante("grille"))?;
+    let (etages, longueur_verticale, cout_vertical) = etages.unwrap_or((1, 1.0, 1.0));
+    Ok(Scenario {
+        grille: Grille {
+            largeur,
+            hauteur,
+            etages,
+            voisinage: voisinage.unwrap_or(Voisinage::Quatre),
+            longueur_verticale,
+            cout_vertical,
+        },
+        directives,
+    })
+}
+
+/// Un nom de directive bien formé : non vide, fait de lettres minuscules ASCII, de chiffres et de `_`.
+fn nom_valide(nom: &str) -> bool {
+    !nom.is_empty() && nom.bytes().all(|octet| octet.is_ascii_lowercase() || octet.is_ascii_digit() || octet == b'_')
+}
+
+/// Un entier en chiffres décimaux ASCII seulement (non vide, sans signe), d'au plus `u64::MAX`.
+fn entier_u64(mot: &str) -> Option<u64> {
+    if mot.is_empty() {
+        return None;
+    }
+    let mut valeur: u64 = 0;
+    for octet in mot.bytes() {
+        if !octet.is_ascii_digit() {
+            return None;
+        }
+        valeur = valeur.checked_mul(10)?.checked_add(u64::from(octet - b'0'))?;
+    }
+    Some(valeur)
+}
+
+/// Un côté de grille : `1..=COTE_MAX`.
+fn cote(mot: &str) -> Option<u32> {
+    let valeur = entier_u64(mot)?;
+    if (1..=u64::from(COTE_MAX)).contains(&valeur) { Some(valeur as u32) } else { None }
+}
+
+/// Un flottant décimal simple, fini : `-?chiffres(.chiffres)?` (voir [`Directive::flottant`]).
+fn flottant_fini(mot: &str) -> Option<f64> {
+    if !forme_flottant(mot) {
+        return None;
+    }
+    let valeur: f64 = mot.parse().ok()?;
+    if valeur.is_finite() { Some(valeur) } else { None }
+}
+
+/// La forme d'un flottant, vérifiée **avant** `parse` : un `-` facultatif, des chiffres (au moins un), puis
+/// facultativement un `.` suivi d'au moins un chiffre.
+fn forme_flottant(mot: &str) -> bool {
+    let chiffres = mot.strip_prefix('-').unwrap_or(mot);
+    let mut parties = chiffres.split('.');
+    let entiere = parties.next().unwrap_or_default();
+    if entiere.is_empty() || !entiere.bytes().all(|octet| octet.is_ascii_digit()) {
+        return false;
+    }
+    match parties.next() {
+        None => true,
+        Some(decimale) => {
+            !decimale.is_empty() && decimale.bytes().all(|octet| octet.is_ascii_digit()) && parties.next().is_none()
+        }
+    }
 }
 
 impl Scenario {
     /// La première directive de ce nom, dans l'ordre du fichier, parmi [`Scenario::directives`], ou `None` (toujours
     /// `None` pour `grille`, `voisinage` et `etages`, qui n'y sont pas).
-    #[allow(unused_variables)]
     pub fn directive(&self, nom: &str) -> Option<&Directive> {
-        todo!()
+        self.directives.iter().find(|directive| directive.nom == nom)
     }
 }
 
@@ -101,9 +223,8 @@ impl Directive {
     /// # Erreurs
     ///
     /// `ErreurLecture::LigneInvalide(self.ligne)` si l'argument est absent, n'est pas écrit ainsi, ou dépasse `u64::MAX`.
-    #[allow(unused_variables)]
     pub fn entier(&self, i: usize) -> Result<u64, ErreurLecture> {
-        todo!()
+        self.args.get(i).and_then(|mot| entier_u64(mot)).ok_or(ErreurLecture::LigneInvalide(self.ligne))
     }
 
     /// L'argument `i` lu comme un flottant, en notation décimale simple : un `-` facultatif, des chiffres (au moins un),
@@ -116,8 +237,7 @@ impl Directive {
     ///
     /// `ErreurLecture::LigneInvalide(self.ligne)` si l'argument est absent, n'a pas cette forme, ou n'est pas fini
     /// (quatre cents chiffres `9`).
-    #[allow(unused_variables)]
     pub fn flottant(&self, i: usize) -> Result<f64, ErreurLecture> {
-        todo!()
+        self.args.get(i).and_then(|mot| flottant_fini(mot)).ok_or(ErreurLecture::LigneInvalide(self.ligne))
     }
 }
