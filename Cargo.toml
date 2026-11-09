@@ -14,7 +14,7 @@ path = "src/main.rs"
 # Une fonctionnalité par étape : ses tests portent #[cfg_attr(not(feature = "etape-<n>"), ignore)] tant qu'elle n'est
 # pas dans `default`. La vague du code d'une étape ajoute son nom à `default`, et rien d'autre ici.
 [features]
-default = []
+default = ["etape-0"]
 etape-0 = []
 etape-1 = []
 etape-2 = []
