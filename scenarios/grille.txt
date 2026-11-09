@@ -1,0 +1,4 @@
+# Le scénario de l'étape 0 : la grille seule, sur deux étages.
+grille 24 16
+voisinage 8
+etages 2 1.0 3.0
