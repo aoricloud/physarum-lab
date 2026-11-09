@@ -15,6 +15,8 @@
 //!   (le dossier de sortie n'est pas créé quand le scénario est refusé). Le message d'une erreur de scénario contient
 //!   `ligne <n>` (le numéro décimal de la ligne fautive, par exemple `ligne 7`, ou, pour une directive que `lancer` refuse,
 //!   le numéro de la ligne de cette directive) ; celui d'une grille manquante contient le mot `grille`.
+//! - **Une écriture qui échoue** est une erreur comme les autres : avant de rendre l'erreur, le binaire retire les
+//!   fichiers qu'il a écrits pendant ce lancer ; il ne reste dans le dossier de sortie que ce qui s'y trouvait avant.
 //! - Code de sortie 0 quand tout est écrit.
 
 use std::ffi::{OsStr, OsString};
@@ -102,9 +104,10 @@ fn executer(args: Vec<OsString>) -> Result<(), String> {
     let sortie = lancer(&scenario, demande.graine).map_err(|erreur| message_de_lancer(&demande.scenario, erreur))?;
     std::fs::create_dir_all(&demande.sortie)
         .map_err(|erreur| format!("dossier de sortie impossible à créer ({}) : {erreur}", demande.sortie.display()))?;
-    ecrire(&demande.sortie.join("empreinte.txt"), format!("{}\n", sortie.empreinte).as_bytes())?;
-    ecrire(&demande.sortie.join("mesures.csv"), sortie.mesures.as_bytes())?;
-    ecrire(&demande.sortie.join("apercu.png"), &sortie.apercu)
+    let mut ecrits: Vec<PathBuf> = Vec::new();
+    ecrire(&demande.sortie.join("empreinte.txt"), format!("{}\n", sortie.empreinte).as_bytes(), &mut ecrits)?;
+    ecrire(&demande.sortie.join("mesures.csv"), sortie.mesures.as_bytes(), &mut ecrits)?;
+    ecrire(&demande.sortie.join("apercu.png"), &sortie.apercu, &mut ecrits)
 }
 
 /// Le message d'une erreur de lecture : le numéro de la ligne fautive, ou le nom de la directive manquante.
@@ -126,7 +129,19 @@ fn message_de_lancer(chemin: &Path, erreur: ErreurLancer) -> String {
     }
 }
 
-/// Écrit un fichier de sortie, en remplaçant celui qui existe.
-fn ecrire(chemin: &Path, contenu: &[u8]) -> Result<(), String> {
-    std::fs::write(chemin, contenu).map_err(|erreur| format!("écriture impossible ({}) : {erreur}", chemin.display()))
+/// Écrit un fichier de sortie, en remplaçant celui qui existe ; si l'écriture échoue, retire ceux que ce lancer a déjà
+/// écrits (sans s'arrêter si un retrait échoue), puis rend l'erreur de l'écriture.
+fn ecrire(chemin: &Path, contenu: &[u8], ecrits: &mut Vec<PathBuf>) -> Result<(), String> {
+    match std::fs::write(chemin, contenu) {
+        Ok(()) => {
+            ecrits.push(chemin.to_path_buf());
+            Ok(())
+        }
+        Err(erreur) => {
+            for ecrit in ecrits.iter() {
+                let _ = std::fs::remove_file(ecrit);
+            }
+            Err(format!("écriture impossible ({}) : {erreur}", chemin.display()))
+        }
+    }
 }
