@@ -51,10 +51,36 @@ pub struct Image {
     pub rvb: Vec<u8>,
 }
 
+/// Le cadre des positions de tous les nœuds : `(xmin, ymin, xmax, ymax, emax)`.
+///
+/// Les bornes sont calculées en `i64` (elles peuvent être négatives), et `emax` est le plus grand étage du graphe.
+fn cadre(graphe: &Graphe) -> (i64, i64, i64, i64, u32) {
+    let noeuds = graphe.noeuds();
+    let premier = noeuds[0];
+    let mut xmin = premier.x as i64;
+    let mut xmax = xmin;
+    let mut ymin = premier.y as i64;
+    let mut ymax = ymin;
+    let mut emax = premier.etage;
+    for noeud in &noeuds[1..] {
+        let x = noeud.x as i64;
+        let y = noeud.y as i64;
+        xmin = xmin.min(x);
+        xmax = xmax.max(x);
+        ymin = ymin.min(y);
+        ymax = ymax.max(y);
+        emax = emax.max(noeud.etage);
+    }
+    (xmin, ymin, xmax, ymax, emax)
+}
+
 /// Les dimensions `(TL, th)` du treillis de ce graphe, en points (voir la documentation du module).
-#[allow(unused_variables)]
 pub fn treillis(graphe: &Graphe) -> (u32, u32) {
-    todo!()
+    let (xmin, ymin, xmax, ymax, emax) = cadre(graphe);
+    let tl = 2 * (xmax - xmin) + 1;
+    let th = 2 * (ymax - ymin) + 1;
+    let largeur = (emax as i64 + 1) * tl + emax as i64 * ECART as i64;
+    (largeur as u32, th as u32)
 }
 
 /// L'aperçu d'un graphe, agrandi `echelle` fois (voir la documentation du module).
@@ -62,7 +88,67 @@ pub fn treillis(graphe: &Graphe) -> (u32, u32) {
 /// # Panique
 ///
 /// Si `echelle` vaut 0.
-#[allow(unused_variables)]
 pub fn apercu_graphe(graphe: &Graphe, echelle: u32) -> Image {
-    todo!()
+    assert!(echelle > 0, "l'échelle doit être strictement positive");
+    let (xmin, ymin, xmax, ymax, emax) = cadre(graphe);
+    let tl = 2 * (xmax - xmin) + 1;
+    let th = 2 * (ymax - ymin) + 1;
+    let largeur = (emax as i64 + 1) * tl + emax as i64 * ECART as i64;
+    let pas = tl + ECART as i64;
+    let l = largeur as usize;
+
+    // Le treillis, une couleur par point, dans l'ordre des couches de la documentation du module.
+    let mut points = vec![FOND; l * th as usize];
+    let point_de = |noeud: &crate::graphe::Noeud| -> (i64, i64) {
+        (noeud.etage as i64 * pas + 2 * (noeud.x as i64 - xmin), 2 * (noeud.y as i64 - ymin))
+    };
+
+    // 2. Le point du milieu de chaque arête dont les deux bouts sont au même étage et voisins.
+    for arete in graphe.aretes() {
+        let a = graphe.noeuds()[arete.a];
+        let b = graphe.noeuds()[arete.b];
+        if a.etage != b.etage || (a.x as i64 - b.x as i64).abs() > 1 || (a.y as i64 - b.y as i64).abs() > 1 {
+            continue;
+        }
+        let col = a.etage as i64 * pas + (a.x as i64 + b.x as i64 - 2 * xmin);
+        let ligne = a.y as i64 + b.y as i64 - 2 * ymin;
+        points[ligne as usize * l + col as usize] = ARETE;
+    }
+
+    // 3. Le point de chaque nœud.
+    for noeud in graphe.noeuds() {
+        let (col, ligne) = point_de(noeud);
+        points[ligne as usize * l + col as usize] = NOEUD;
+    }
+
+    // 4. Les deux bouts de chaque lien entre étages, chacun dans le panneau de son étage.
+    for arete in graphe.aretes() {
+        let a = graphe.noeuds()[arete.a];
+        let b = graphe.noeuds()[arete.b];
+        if a.etage == b.etage {
+            continue;
+        }
+        for noeud in [a, b] {
+            let (col, ligne) = point_de(&noeud);
+            points[ligne as usize * l + col as usize] = PUITS;
+        }
+    }
+
+    // L'agrandissement : chaque point du treillis devient un carré de `echelle × echelle` pixels.
+    let grand_largeur = l * echelle as usize;
+    let grand_hauteur = th as usize * echelle as usize;
+    let mut rvb = Vec::with_capacity(3 * grand_largeur * grand_hauteur);
+    for ligne in 0..th as usize {
+        let mut rangee = Vec::with_capacity(3 * grand_largeur);
+        for &couleur in &points[ligne * l..(ligne + 1) * l] {
+            for _ in 0..echelle {
+                rangee.extend_from_slice(&couleur);
+            }
+        }
+        for _ in 0..echelle {
+            rvb.extend_from_slice(&rangee);
+        }
+    }
+
+    Image { largeur: grand_largeur as u32, hauteur: grand_hauteur as u32, rvb }
 }
