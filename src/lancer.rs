@@ -41,6 +41,10 @@
 //! `physarum lancer <scénario> --graine <n> --sortie <dossier>` (voir `src/main.rs`) lit le fichier de scénario,
 //! appelle [`lancer`] et écrit `empreinte.txt` (l'empreinte puis `\n`), `mesures.csv` et `apercu.png` dans le dossier.
 
+use crate::alea::Alea;
+use crate::empreinte::sha256_hex;
+use crate::image::ecrire_png;
+use crate::rendu::{apercu_graphe, treillis};
 use crate::scenario::Scenario;
 
 /// Ce que produit un lancer.
@@ -70,7 +74,35 @@ pub enum ErreurLancer {
 ///
 /// `ErreurLancer::DirectiveInconnue(ligne)` si `scenario.directives` n'est pas vide : `ligne` est le numéro de ligne
 /// de sa première directive. Rien d'autre n'est calculé alors.
-#[allow(unused_variables)]
 pub fn lancer(scenario: &Scenario, graine: u64) -> Result<Sortie, ErreurLancer> {
-    todo!()
+    // L'étape 0 ne comprend aucune autre directive : la première restante fait refuser le scénario, avant tout
+    // calcul.
+    if let Some(premiere) = scenario.directives.first() {
+        return Err(ErreurLancer::DirectiveInconnue(premiere.ligne));
+    }
+
+    let graphe = scenario.grille.graphe().expect("la grille d'un scénario lu donne toujours un graphe");
+
+    // L'écriture canonique de l'état : l'étiquette, le graphe, puis la graine tout juste amorcée.
+    let mut octets = Vec::new();
+    octets.extend_from_slice(b"PHYSAR00");
+    octets.extend_from_slice(&graphe.octets());
+    octets.extend_from_slice(&Alea::new(graine).octets());
+    let empreinte = sha256_hex(&octets);
+
+    // Les mesures : l'en-tête, puis une ligne, la longueur en six décimales.
+    let mesures = format!(
+        "temps,noeuds,aretes,longueur\n0,{},{},{:.6}\n",
+        graphe.nb_noeuds(),
+        graphe.nb_aretes(),
+        graphe.longueur_totale()
+    );
+
+    // L'aperçu : l'échelle `512 / TL` ramenée entre 1 et 8 (division entière).
+    let (tl, _th) = treillis(&graphe);
+    let echelle = (512 / tl).clamp(1, 8);
+    let image = apercu_graphe(&graphe, echelle);
+    let apercu = ecrire_png(image.largeur, image.hauteur, &image.rvb);
+
+    Ok(Sortie { empreinte, mesures, apercu })
 }
