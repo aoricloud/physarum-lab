@@ -33,3 +33,14 @@ Un réseau convergé (la ligne vive entre la source et le puits) ; l'agent, lâc
 - `etape-2t-tache-15.png` : après 15 pas de `0,1`, la tache avance le long des tubes vifs.
 - `etape-2t-tache-40.png` : après 40 pas, elle s'étire sur la ligne, un peu étalée par la diffusion.
 - `etape-2t-tache-80.png` : après 80 pas, elle arrive au puits, au bout de la ligne.
+
+## Étape 2 (la mémoire dans la forme)
+
+Le scénario `scenarios/souvenir.txt` : deux nourritures sur l'axe d'une grille ; un stimulus d'agent (en vert) au-dessus
+du milieu pendant les cent premiers pas ; l'agent assouplit les tubes qu'il touche.
+
+- `etape-2m-souvenir-100.png` : à la fin du stimulus, l'agent est là et un détour de tubes épais monte vers lui.
+- `etape-2m-souvenir-400.png` : trois cents pas plus tard l'agent a disparu et le détour est resté (loi sigmoïde :
+  c'est la mémoire dans la forme).
+- `etape-2m-lineaire-400.png` : la même chose sous la loi linéaire (débit 1) : il ne reste que la ligne droite, la
+  trace est effacée (le résultat négatif).
