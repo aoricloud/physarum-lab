@@ -330,9 +330,9 @@ use crate::alea::Alea;
 use crate::graphe::Graphe;
 use crate::rendu::{ECART, Image};
 use crate::reseaux::Loi;
-use crate::solveur::ErreurSolveur;
+use crate::solveur::{ErreurSolveur, flux, pressions};
 use crate::tubes;
-use crate::tubes::Etat;
+use crate::tubes::{Etat, PLANCHER};
 
 /// Le nombre de sous-pas au-delà duquel [`Agent::avancer`] refuse : `1_000_000`.
 pub const MAX_SOUS_PAS: usize = 1_000_000;
@@ -895,7 +895,6 @@ pub struct PasMemoire {
 
 /// Les tubes et l'agent d'un réseau, avancés ensemble (voir « La mémoire dans la forme »).
 #[derive(Clone, Debug, PartialEq)]
-#[allow(dead_code)]
 pub struct Memoire {
     conductivites: Vec<f64>,
     agent: Agent,
@@ -909,25 +908,32 @@ impl Memoire {
     /// Dans cet ordre : `Taille` (`conductivites.len()` n'est pas `graphe.nb_aretes()`, ou l'agent n'a pas
     /// `graphe.nb_noeuds()` concentrations) ; `Conductivite(e)` (le plus petit indice d'une conductivité qui n'est pas
     /// un nombre fini `>= PLANCHER`).
-    #[allow(unused_variables)]
     pub fn new(graphe: &Graphe, conductivites: Vec<f64>, agent: Agent) -> Result<Memoire, ErreurMemoire> {
-        todo!()
+        if conductivites.len() != graphe.nb_aretes() || agent.concentrations().len() != graphe.nb_noeuds() {
+            return Err(ErreurMemoire::Taille);
+        }
+        for (e, &d) in conductivites.iter().enumerate() {
+            if !(d.is_finite() && d >= PLANCHER) {
+                return Err(ErreurMemoire::Conductivite(e));
+            }
+        }
+        Ok(Memoire { conductivites, agent })
     }
 
     /// Une mémoire aux conductivités de départ de `Tubes::au_hasard(graphe, alea)` et à l'agent à zéro.
-    #[allow(unused_variables)]
     pub fn au_hasard(graphe: &Graphe, alea: &mut Alea) -> Memoire {
-        todo!()
+        let tubes = tubes::Tubes::au_hasard(graphe, alea);
+        Memoire { conductivites: tubes.conductivites().to_vec(), agent: Agent::zero(graphe) }
     }
 
     /// Les conductivités, dans l'ordre des indices d'arête.
     pub fn conductivites(&self) -> &[f64] {
-        todo!()
+        &self.conductivites
     }
 
     /// L'agent.
     pub fn agent(&self) -> &Agent {
-        todo!()
+        &self.agent
     }
 
     /// Un pas couplé (voir « Le pas couplé, à la lettre » et « Les vérifications du pas couplé »).
@@ -935,7 +941,7 @@ impl Memoire {
     /// # Erreurs
     ///
     /// Celles de « Les vérifications du pas couplé », dans leur ordre ; **sur une erreur, rien n'a changé**.
-    #[allow(unused_variables, clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn avancer(
         &mut self,
         graphe: &Graphe,
@@ -948,6 +954,54 @@ impl Memoire {
         apports: &[(usize, f64)],
         h: f64,
     ) -> Result<PasMemoire, ErreurMemoire> {
-        todo!()
+        if self.conductivites.len() != graphe.nb_aretes() || self.agent.concentrations().len() != graphe.nb_noeuds() {
+            return Err(ErreurMemoire::Taille);
+        }
+        if source >= graphe.nb_noeuds() || puits >= graphe.nb_noeuds() || source == puits {
+            return Err(ErreurMemoire::Noeud);
+        }
+        if !(debit.is_finite() && debit > 0.0) {
+            return Err(ErreurMemoire::Debit);
+        }
+        if !(h.is_finite() && h > 0.0 && h < 1.0) {
+            return Err(ErreurMemoire::Pas);
+        }
+        if !(couplage.force.is_finite() && couplage.force >= 0.0) {
+            return Err(ErreurMemoire::Force);
+        }
+        if !(couplage.saturation.is_finite() && couplage.saturation > 0.0) {
+            return Err(ErreurMemoire::Saturation);
+        }
+        // Les flux, avec les conductivités d'avant le pas.
+        let mut conductances = Vec::with_capacity(graphe.nb_aretes());
+        for e in 0..graphe.nb_aretes() {
+            conductances.push(self.conductivites[e] / graphe.aretes()[e].cout);
+        }
+        let mut injections = vec![0.0; graphe.nb_noeuds()];
+        injections[source] = debit;
+        let p = pressions(graphe, &conductances, &injections, puits).map_err(ErreurMemoire::Solveur)?;
+        let q = flux(graphe, &conductances, &p);
+        // Le transport, sur une copie de l'agent : rien n'est écrit avant la fin du pas.
+        let mut agent_apres = self.agent.clone();
+        let bilan = agent_apres.avancer(graphe, &q, transport, apports, h).map_err(ErreurMemoire::Agent)?;
+        // La loi couplée, avec les concentrations d'AVANT le transport.
+        let concentrations = self.agent.concentrations();
+        let mut mises_a_jour = Vec::with_capacity(self.conductivites.len());
+        for (e, arete) in graphe.aretes().iter().enumerate() {
+            let ce = (concentrations[arete.a] + concentrations[arete.b]) * 0.5;
+            let sigma = ce / (couplage.saturation + ce);
+            let cible = (1.0 + couplage.force * sigma) * loi.valeur(q[e]);
+            if !cible.is_finite() {
+                return Err(ErreurMemoire::Debordement);
+            }
+            let d = self.conductivites[e] + h * (cible - self.conductivites[e]);
+            if !d.is_finite() {
+                return Err(ErreurMemoire::Debordement);
+            }
+            mises_a_jour.push(if d >= PLANCHER { d } else { PLANCHER });
+        }
+        self.conductivites = mises_a_jour;
+        self.agent = agent_apres;
+        Ok(PasMemoire { etat: Etat { pressions: p, flux: q }, bilan })
     }
 }
