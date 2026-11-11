@@ -83,7 +83,7 @@
 //! les fichiers de `scenarios/`, pas une vérification de `lancer` (qui accepte un coût vertical plus étalé et rend
 //! `Calcul(pas)` quand le calcul s'arrête).
 
-use crate::graphe::{Graphe, Grille};
+use crate::graphe::{Arete, Graphe, Grille};
 
 /// Le plus petit facteur d'étage permis : `0.1`.
 pub const FACTEUR_MIN: f64 = 0.1;
@@ -154,7 +154,6 @@ pub struct Plan {
 /// # Erreurs
 ///
 /// Celles de « Les erreurs », dans leur ordre : la première qui s'applique.
-#[allow(unused_variables)]
 pub fn construire(
     grille: &Grille,
     murs: &[Mur],
@@ -162,5 +161,92 @@ pub fn construire(
     source: usize,
     puits: usize,
 ) -> Result<Plan, ErreurLabyrinthe> {
-    todo!()
+    let complet = grille.graphe().map_err(|_| ErreurLabyrinthe::Grille)?;
+    let n = complet.nb_noeuds();
+
+    for (i, mur) in murs.iter().enumerate() {
+        if mur.x0 > mur.x1
+            || mur.y0 > mur.y1
+            || mur.x1 >= grille.largeur
+            || mur.y1 >= grille.hauteur
+            || mur.etage >= grille.etages
+        {
+            return Err(ErreurLabyrinthe::Mur(i));
+        }
+    }
+
+    let mut facteurs: Vec<f64> = vec![1.0; grille.etages as usize];
+    let mut donne: Vec<bool> = vec![false; grille.etages as usize];
+    for (i, c) in couts.iter().enumerate() {
+        if c.etage >= grille.etages {
+            return Err(ErreurLabyrinthe::Facteur(i));
+        }
+        let e = c.etage as usize;
+        if !(c.facteur >= FACTEUR_MIN && c.facteur <= FACTEUR_MAX) || donne[e] {
+            return Err(ErreurLabyrinthe::Facteur(i));
+        }
+        donne[e] = true;
+        facteurs[e] = c.facteur;
+    }
+
+    if source >= n || puits >= n || source == puits {
+        return Err(ErreurLabyrinthe::Noeud);
+    }
+
+    let mut mure = vec![false; n];
+    for mur in murs {
+        for y in mur.y0..=mur.y1 {
+            for x in mur.x0..=mur.x1 {
+                mure[grille.indice(x, y, mur.etage)] = true;
+            }
+        }
+    }
+    if mure[puits] {
+        return Err(ErreurLabyrinthe::PuitsMure);
+    }
+    if mure[source] {
+        return Err(ErreurLabyrinthe::SourceMuree);
+    }
+
+    let mut garde = vec![false; n];
+    garde[puits] = true;
+    let mut pile = vec![puits];
+    while let Some(u) = pile.pop() {
+        for &k in complet.incidentes(u) {
+            let a = &complet.aretes()[k];
+            let v = if a.a == u { a.b } else { a.a };
+            if !mure[v] && !garde[v] {
+                garde[v] = true;
+                pile.push(v);
+            }
+        }
+    }
+    if !garde[source] {
+        return Err(ErreurLabyrinthe::SourceCoupee);
+    }
+
+    let mut noeuds: Vec<Option<usize>> = vec![None; n];
+    let mut gardes = Vec::new();
+    for (i, nd) in complet.noeuds().iter().enumerate() {
+        if garde[i] {
+            noeuds[i] = Some(gardes.len());
+            gardes.push(*nd);
+        }
+    }
+
+    let mut aretes = Vec::new();
+    for a in complet.aretes() {
+        if let (Some(na), Some(nb)) = (noeuds[a.a], noeuds[a.b]) {
+            let ea = complet.noeuds()[a.a].etage;
+            let eb = complet.noeuds()[a.b].etage;
+            let cout = if ea == eb { a.cout * facteurs[ea as usize] } else { a.cout };
+            aretes.push(Arete { a: na, b: nb, longueur: a.longueur, cout });
+        }
+    }
+
+    let graphe = Graphe::new(gardes, aretes).map_err(|_| ErreurLabyrinthe::Grille)?;
+    match (noeuds[source], noeuds[puits]) {
+        (Some(s), Some(p)) => Ok(Plan { graphe, noeuds, source: s, puits: p }),
+        _ => Err(ErreurLabyrinthe::Grille),
+    }
 }

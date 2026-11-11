@@ -144,3 +144,95 @@ Un calcul qui s'arrête n'est pas un plantage : si le solveur rend une erreur à
 - **L'égalité entre Linux et Windows** n'est établie que par la CI qui rejoue l'empreinte de référence
   (`references/chemin-graine-1.empreinte`) sous les deux systèmes ; elle prouve que rien n'a bougé, pas que c'est
   juste. Sa justesse vient du modèle Python `ref_tubes.py`, qui l'a calculée avant le code.
+
+## Étape 1 (partie 1L) : le labyrinthe et les étages
+
+Le blob y traverse un labyrinthe et choisit, entre deux étages, de monter ou de rester en bas. Rien de neuf dans la
+dynamique : c'est celle du cœur (les tubes de la loi linéaire de Bonifaci) sur des graphes que le module `labyrinthe`
+construit. Les valeurs attendues des tests, chacune avec sa source, sont dans `references/etape-1l-valeurs.md`.
+
+### Les murs et les étages : `labyrinthe`
+
+- **Un mur retire des cellules, pas des arêtes.** Un nœud sans arête ferait rendre `Isole` au solveur ; retirer la
+  cellule entière (le nœud et toutes ses arêtes) laisse un graphe sain. Un mur est un rectangle de cellules d'un étage
+  (directive `mur <x0> <y0> <x1> <y1> <etage>`, bornes comprises).
+- **Seule la composante du puits est gardée** : une poche fermée par des murs, une cellule isolée, une impasse coupée du
+  reste disparaissent avec leurs arêtes. Si la source n'est pas dans cette composante, c'est une erreur.
+- **Les nœuds gardés sont renumérotés dans l'ordre croissant de leur indice de grille**, et les arêtes gardées restent
+  dans l'ordre canonique de `Graphe::new` (le même ordre relatif que dans la grille complète : la renumérotation
+  conserve l'ordre). La source et le puits de l'état écrit sont leurs indices dans ce graphe ; l'étiquette de l'état
+  reste `PHYSAR01` (la forme ne change pas : le graphe y est écrit en entier, murs et coûts compris). Sans mur ni coût
+  d'étage, le graphe, l'état et l'empreinte sont ceux d'avant, au bit près (testé sur les scénarios du cœur et de
+  l'étape 0).
+- **Le coût d'un étage** (directive `cout_etage <etage> <facteur>`) : le coût de chaque arête dont les deux bouts sont
+  dans l'étage est multiplié par le facteur, dans `[0,1 ; 10]` ; la longueur ne change pas, un lien entre étages garde
+  son coût vertical. Les bornes évitent un rapport de conductances au-delà de `10^10`, où le solveur se trompe sans le
+  dire (voir l'étape 0 et le cœur) ; le coût vertical des scénarios du dépôt reste lui aussi dans `[0,1 ; 10]` (un test
+  le vérifie sur les fichiers de `scenarios/`, `lancer` ne le refuse pas).
+- **À nous, sans article derrière** : tout cela (les murs, la composante, le coût d'un étage, les formats des
+  directives).
+
+### Le labyrinthe de Nakagaki
+
+Nakagaki, Yamada et Tóth (Nature 407, 2000, p. 470) font traverser un labyrinthe au plasmode. **Ce qui a été lu** : la
+page imprimée 470 seule : quatre chemins possibles (α1, α2, β1, β2) dont les plus courts mesurent `41`, `33`, `44` et
+`45 ± 1 mm` ; la route par α2, environ 22 % plus courte que celle par α1, est toujours choisie ; β1 et β2 portent « à
+peu près le même nombre de tubes » parce que leur différence (environ 2 %) se perd dans les méandres du tube ; les
+impasses se rétractent. **Ce qui n'a pas été lu** : le dessin du labyrinthe, la structure des routes (le texte ne la
+décrit pas), le texte complet de l'éditeur. **Notre lecture** : le tableau de la Fig. 1d croise les α (lignes) et les β
+(colonnes) ; nous lisons donc les routes **en série** : de la source à une jonction par α1 ou α2, puis de la jonction au
+puits par β1 ou β2.
+
+Le labyrinthe de `scenarios/labyrinthe.txt` est **un dessin à nous**, sur une grille 41 × 29 en voisinage 4, couloirs
+d'une cellule, à **deux cellules par millimètre** : les quatre plus courts chemins mesurent exactement **82, 66, 88 et
+90** cellules (à une cellule par millimètre, `44` et `45` ne pourraient pas relier les mêmes bouts : la parité d'une
+grille l'interdit ; à deux, `88` et `90` le peuvent), plus trois impasses. La source est en `(2, 14)`, la jonction en
+`(20, 14)` et le puits en `(38, 14)`. Les tests mesurent les quatre longueurs par `chemins::plus_courts` sur le graphe,
+en coupant tour à tour les autres routes.
+
+**Ce que la loi linéaire en fait** (graines 1 à 12, `h = 0,5`, tolérances mesurées sur 50 autres graines) :
+
+- la route la plus courte, α2 puis β1 (154 cellules), est retenue **quelle que soit la graine** : à 150 pas, les tubes
+  d'α1 sont exactement au plancher, ceux d'α2 à `>= 0,999` ; à 200 pas, les tubes vifs (`>= 0,5`) sont exactement ceux
+  du plus court chemin de Dijkstra ; à 600 pas, la pression de la source est à `154,002` à `154,003`, par le haut
+  (Bonifaci : le potentiel source-puits tend vers `L*`) ;
+- α1 meurt vite (sa conductivité maximale passe sous `0,01` au pas 45 pour les 12 graines) ; **β1 et β2 meurent bien
+  plus lentement** : β2 passe sous `0,01` entre les pas 408 et 415 (mesuré de 405 à 418 sur 50 graines), au moins huit
+  fois plus tard. L'écart des longueurs est de 22 % pour α, de 2,3 % pour β : la différence entre deux routes d'une
+  paire décroît au rythme de leur écart relatif ;
+- **chez nous, sans bruit, β2 finit par mourir** (à 600 pas, `<= 0,004`), alors que dans l'article « à peu près le même
+  nombre de tubes » se forment par β1 et β2, parce que l'écart de 2 % se perd dans l'erreur expérimentale. Au début,
+  nous voyons la même chose (à 20 pas, β1 est entre `0,538` et `0,572` et β2 entre `0,428` et `0,462`, sur 50 graines).
+  **Aucun chiffre de l'article n'est retrouvé** : il n'y en a pas pour ce temps-là ;
+- les impasses meurent (leur conductivité tombe sous `0,01` au pas 7 et au plancher à 20 pas), comme l'article les
+  montre se rétracter.
+
+### Les puits entre deux étages
+
+Deux étages, la source et le puits sur celui du bas, celui du haut moins cher (`cout_etage 1 f`, `f < 1`) : le plus
+court chemin monte puis redescend si `2 c + L_haut < L_bas` (`c` le coût d'un lien vertical), sinon il reste en bas.
+Pour une grille 21 × 3 et `f = 0,5` : `L_bas = 20`, `L_haut = 10`, le seuil est `c = 5`. Sur une suite de coûts
+verticaux de `0,1` à `10` (la zone de `4` à `6` écartée : deux chemins à moins de 10 % l'un de l'autre convergent
+lentement, et à l'égalité le théorème ne choisit pas), **le nombre de liens verticaux vifs après 300 pas ne croît jamais
+quand `c` croît** : il vaut 2 (monter, redescendre) ou 0, comme le dit Dijkstra, et les arêtes vives sont exactement
+celles du plus court chemin. C'est **la seule chose que la loi linéaire permet de dire des puits** : une seule route
+survit (théorème 2 de Bonifaci et al.), donc deux puits ou aucun. **La loi sigmoïde de la partie « les réseaux » gardera
+plusieurs routes** ; ces tests-ci n'en disent rien. Un pont (un mur sur tout un étage, la seule route passe par l'autre)
+est aussi testé.
+
+### Ce que cette partie n'établit pas
+
+- **Le dessin de l'article.** Nous ne l'avons pas ; notre lecture « en série » est une déduction du tableau de la Fig.
+  1d, pas une phrase du texte. Les longueurs 82, 66, 88 et 90 sont celles de notre dessin, (l'article donne `± 1 mm`,
+  soit `± 2` cellules).
+- **Aucun chiffre de dynamique de l'article n'est retrouvé** : il n'en publie pas. Les pas de mort, les rapports et les
+  seuils sont des constats de notre schéma (explicite, avec plancher, sans bruit), avec des tolérances mesurées sur 50
+  graines.
+- **Le bruit.** L'article attribue l'égalité entre β1 et β2 à l'erreur expérimentale ; notre modèle n'a pas de bruit,
+  donc β2 meurt.
+- **Plusieurs routes ou plusieurs puits** : la loi linéaire n'en garde qu'une ; la partie « les réseaux » reprendra la
+  question avec la loi sigmoïde.
+- **Les coûts verticaux à moins de 10 % du seuil** et les égalités de coût : aucun test ne dit ce qui s'y passe.
+- **La vitesse** : les nombres de pas sont ceux de ce dessin, de `h = 0,5` et de ces graines.
+- **Les grands labyrinthes** : 342 nœuds au plus ici ; rien sur la précision du solveur à 10 000 nœuds.
+- **Linux** : tout est joué sous Windows ; la CI rejouera l'empreinte de `references/labyrinthe-graine-1.empreinte`.
