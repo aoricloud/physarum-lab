@@ -154,6 +154,7 @@ use crate::alea::Alea;
 use crate::empreinte::sha256_hex;
 use crate::graphe::Grille;
 use crate::image::ecrire_png;
+use crate::labyrinthe::{CoutEtage, ErreurLabyrinthe, FACTEUR_MAX, FACTEUR_MIN, Mur, construire};
 use crate::mesures::tubes_vifs;
 use crate::rendu::{apercu_graphe, treillis};
 use crate::scenario::{Directive, Scenario};
@@ -199,7 +200,15 @@ pub fn lancer(scenario: &Scenario, graine: u64) -> Result<Sortie, ErreurLancer> 
     // Les trois directives des tubes, toutes les trois ou aucune, vérifiées avant tout calcul.
     let demande = lire_directives(&scenario.directives, &scenario.grille)?;
 
-    let graphe = scenario.grille.graphe().expect("la grille d'un scénario lu donne toujours un graphe");
+    // Le graphe du plan : les murs retirés, la composante du puits gardée, les coûts d'étage appliqués.
+    let plan = construire(&scenario.grille, &demande.murs, &demande.couts, demande.source, demande.puits).map_err(
+        |erreur| match erreur {
+            ErreurLabyrinthe::PuitsMure => ErreurLancer::DirectiveInconnue(demande.ligne_puits),
+            _ => ErreurLancer::DirectiveInconnue(demande.ligne_source),
+        },
+    )?;
+    let graphe = plan.graphe;
+    let (source, puits) = (plan.source, plan.puits);
 
     // La simulation : le générateur tout juste amorcé, les tubes au hasard, puis `nombre` pas de longueur `h`.
     let mut alea = Alea::new(graine);
@@ -208,10 +217,8 @@ pub fn lancer(scenario: &Scenario, graine: u64) -> Result<Sortie, ErreurLancer> 
     for t in 0..demande.nombre {
         // La ligne `t` décrit l'état juste avant le pas `t` ; sa pression est celle que ce pas calcule.
         let (vifs, longueur) = tubes_vifs(&graphe, tubes.conductivites(), 0.5);
-        let etat = tubes
-            .avancer(&graphe, demande.source, demande.puits, 1.0, demande.h)
-            .map_err(|_| ErreurLancer::Calcul(t))?;
-        let pression = etat.pressions[demande.source];
+        let etat = tubes.avancer(&graphe, source, puits, 1.0, demande.h).map_err(|_| ErreurLancer::Calcul(t))?;
+        let pression = etat.pressions[source];
         mesures.push_str(&format!("{t},{pression:.9},{vifs},{longueur:.6}\n"));
     }
 
@@ -219,8 +226,8 @@ pub fn lancer(scenario: &Scenario, graine: u64) -> Result<Sortie, ErreurLancer> 
     let mut octets = Vec::new();
     octets.extend_from_slice(b"PHYSAR01");
     octets.extend_from_slice(&graphe.octets());
-    octets.extend_from_slice(&(demande.source as u32).to_le_bytes());
-    octets.extend_from_slice(&(demande.puits as u32).to_le_bytes());
+    octets.extend_from_slice(&(source as u32).to_le_bytes());
+    octets.extend_from_slice(&(puits as u32).to_le_bytes());
     octets.extend_from_slice(&demande.nombre.to_le_bytes());
     octets.extend_from_slice(&demande.h.to_bits().to_le_bytes());
     for &conductivite in tubes.conductivites() {
@@ -268,10 +275,17 @@ fn lancer_grille_seule(scenario: &Scenario, graine: u64) -> Sortie {
 
 /// Les valeurs des trois directives des tubes, une fois vérifiées.
 struct TubesDemandes {
+    /// L'indice de la source dans la grille, et la ligne de sa directive.
     source: usize,
+    ligne_source: usize,
+    /// L'indice du puits dans la grille, et la ligne de sa directive.
     puits: usize,
+    ligne_puits: usize,
     nombre: u32,
     h: f64,
+    /// Les murs et les coûts d'étage, dans l'ordre du fichier.
+    murs: Vec<Mur>,
+    couts: Vec<CoutEtage>,
 }
 
 /// Vérifie les directives des tubes et rend leurs valeurs (voir « Les erreurs » dans la documentation du module).
@@ -282,6 +296,8 @@ fn lire_directives(directives: &[Directive], grille: &Grille) -> Result<TubesDem
     let mut source: Option<(usize, usize)> = None; // (ligne, indice du nœud)
     let mut puits: Option<(usize, usize)> = None;
     let mut pas: Option<(u32, f64)> = None;
+    let mut murs: Vec<Mur> = Vec::new();
+    let mut couts: Vec<CoutEtage> = Vec::new();
     let mut fautive: Option<usize> = None;
     for directive in directives {
         let faute = match directive.nom.as_str() {
@@ -324,6 +340,20 @@ fn lire_directives(directives: &[Directive], grille: &Grille) -> Result<TubesDem
                     }
                 }
             }
+            "mur" => match mur(directive, grille) {
+                Some(valeur) => {
+                    murs.push(valeur);
+                    None
+                }
+                None => Some(directive.ligne),
+            },
+            "cout_etage" => match cout_etage(directive, grille) {
+                Some(valeur) if !couts.iter().any(|cout| cout.etage == valeur.etage) => {
+                    couts.push(valeur);
+                    None
+                }
+                _ => Some(directive.ligne),
+            },
             _ => Some(directive.ligne),
         };
         if fautive.is_none() {
@@ -342,12 +372,12 @@ fn lire_directives(directives: &[Directive], grille: &Grille) -> Result<TubesDem
     }
 
     // Il manque une directive : la ligne de la première directive restante du fichier.
-    let (Some((_, source)), Some((_, puits)), Some((nombre, h))) = (source, puits, pas) else {
+    let (Some((ligne_source, source)), Some((ligne_puits, puits)), Some((nombre, h))) = (source, puits, pas) else {
         let premiere = directives.first().expect("la liste des directives n'est pas vide");
         return Err(ErreurLancer::DirectiveInconnue(premiere.ligne));
     };
 
-    Ok(TubesDemandes { source, puits, nombre, h })
+    Ok(TubesDemandes { source, ligne_source, puits, ligne_puits, nombre, h, murs, couts })
 }
 
 /// Le nœud d'une directive `source` ou `puits`, ou `None` si elle est fautive (arguments, forme ou bornes).
@@ -361,6 +391,44 @@ fn noeud(directive: &Directive, grille: &Grille) -> Option<usize> {
         return None;
     }
     Some(grille.indice(x as u32, y as u32, etage as u32))
+}
+
+/// Le mur d'une directive `mur`, ou `None` si elle est fautive (arguments, forme ou bornes).
+fn mur(directive: &Directive, grille: &Grille) -> Option<Mur> {
+    if directive.args.len() != 5 {
+        return None;
+    }
+    let x0 = directive.entier(0).ok()?;
+    let y0 = directive.entier(1).ok()?;
+    let x1 = directive.entier(2).ok()?;
+    let y1 = directive.entier(3).ok()?;
+    let etage = directive.entier(4).ok()?;
+    // Comparaisons en `u64`, avant toute conversion.
+    if x0 > x1
+        || y0 > y1
+        || x1 >= u64::from(grille.largeur)
+        || y1 >= u64::from(grille.hauteur)
+        || etage >= u64::from(grille.etages)
+    {
+        return None;
+    }
+    Some(Mur { x0: x0 as u32, y0: y0 as u32, x1: x1 as u32, y1: y1 as u32, etage: etage as u32 })
+}
+
+/// Le coût d'étage d'une directive `cout_etage`, ou `None` si elle est fautive (arguments, forme ou bornes).
+fn cout_etage(directive: &Directive, grille: &Grille) -> Option<CoutEtage> {
+    if directive.args.len() != 2 {
+        return None;
+    }
+    let etage = directive.entier(0).ok()?;
+    if etage >= u64::from(grille.etages) {
+        return None;
+    }
+    let facteur = directive.flottant(1).ok()?;
+    if !(FACTEUR_MIN..=FACTEUR_MAX).contains(&facteur) {
+        return None;
+    }
+    Some(CoutEtage { etage: etage as u32, facteur })
 }
 
 /// Le nombre de pas et le pas de temps d'une directive `pas`, ou `None` si elle est fautive (arguments, forme ou
