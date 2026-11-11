@@ -1,20 +1,22 @@
-//! Le binaire `physarum` : `physarum lancer <scénario> --graine <n> --sortie <dossier>` (étape 0).
+//! Le binaire `physarum` : `physarum lancer <scénario> --graine <n> --sortie <dossier>` (étape 0, puis chaque étape).
 //!
-//! - `<scénario>` : le chemin d'un fichier de scénario (voir `physarum_lab::scenario`). `--graine <n>` : un entier non signé
-//!   de 64 bits écrit en chiffres décimaux seulement (sans signe). `--sortie <dossier>` : le dossier des sorties, créé
-//!   (avec ses parents) s'il manque. Les deux options figurent **chacune une fois**, dans n'importe quel ordre, et le
-//!   chemin du scénario est le seul argument qui ne soit pas une option ni la valeur d'une option.
-//! - Il lit le fichier, appelle `physarum_lab::lancer::lancer` et écrit dans le dossier trois fichiers, et aucun autre :
-//!   `empreinte.txt` (l'empreinte, 64 chiffres hexadécimaux, puis un `\n`), `mesures.csv` (les mesures, telles que
+//! - `<scénario>` : le chemin d'un fichier de scénario (voir `physarum_lab::scenario`). `--graine <n>` : un entier non
+//!   signé de 64 bits écrit en chiffres décimaux seulement (sans signe). `--sortie <dossier>` : le dossier des sorties,
+//!   créé (avec ses parents) s'il manque. Les deux options figurent **chacune une fois**, dans n'importe quel ordre, et
+//!   le chemin du scénario est le seul argument qui ne soit pas une option ni la valeur d'une option.
+//! - Il lit le fichier, appelle `physarum_lab::lancer::lancer` et écrit dans le dossier trois fichiers, et aucun autre
+//!   : `empreinte.txt` (l'empreinte, 64 chiffres hexadécimaux, puis un `\n`), `mesures.csv` (les mesures, telles que
 //!   rendues) et `apercu.png` (l'aperçu, tel que rendu). Un dossier qui contient déjà ces fichiers les voit remplacés.
 //! - Il ne rend rien d'autre que ces fichiers (rien d'imposé sur la sortie standard).
-//! - **Toute erreur** (aucune commande ou une commande autre que `lancer` ; une option inconnue, répétée, sans valeur ou
-//!   absente ; une graine mal écrite ou qui dépasse 64 bits ; un scénario en trop ; un fichier illisible ; un scénario
-//!   invalide ou refusé par `lancer` ; un dossier impossible à créer) : un message d'une ligne au moins sur la sortie
-//!   d'erreur (sans `panicked`, car ce n'est pas un plantage), le **code de sortie 1**, et **rien d'écrit ni de créé**
-//!   (le dossier de sortie n'est pas créé quand le scénario est refusé). Le message d'une erreur de scénario contient
-//!   `ligne <n>` (le numéro décimal de la ligne fautive, par exemple `ligne 7`, ou, pour une directive que `lancer` refuse,
-//!   le numéro de la ligne de cette directive) ; celui d'une grille manquante contient le mot `grille`.
+//! - **Toute erreur** (aucune commande ou une commande autre que `lancer` ; une option inconnue, répétée, sans valeur
+//!   ou absente ; une graine mal écrite ou qui dépasse 64 bits ; un scénario en trop ; un fichier illisible ; un
+//!   scénario invalide ou refusé par `lancer` ; un calcul qui s'arrête ; un dossier impossible à créer) : un message
+//!   d'une ligne au moins sur la sortie d'erreur (sans `panicked`, car ce n'est pas un plantage), le **code de sortie
+//!   1**, et **rien d'écrit ni de créé** (le dossier de sortie n'est pas créé quand le scénario est refusé ou que le
+//!   calcul s'arrête). Le message d'une erreur de scénario contient `ligne <n>` (le numéro décimal de la ligne
+//!   fautive, par exemple `ligne 7`, ou, pour une directive que `lancer` refuse, le numéro de la ligne de cette
+//!   directive) ; celui d'une grille manquante contient le mot `grille` ; celui d'un calcul qui s'arrête
+//!   (`ErreurLancer::Calcul(t)`, étape 1) contient `pas <t>` (le numéro décimal du pas, par exemple `pas 0`).
 //! - **Une écriture qui échoue** est une erreur comme les autres : avant de rendre l'erreur, le binaire retire les
 //!   fichiers qu'il a écrits pendant ce lancer ; il ne reste dans le dossier de sortie que ce qui s'y trouvait avant.
 //! - Code de sortie 0 quand tout est écrit.
@@ -120,11 +122,15 @@ fn message_de_lecture(chemin: &Path, erreur: ErreurLecture) -> String {
     }
 }
 
-/// Le message d'une erreur de lancer : le numéro de la directive incomprise.
+/// Le message d'une erreur de lancer : le numéro de la ligne de la directive incomprise, ou le numéro du pas où le
+/// calcul s'est arrêté.
 fn message_de_lancer(chemin: &Path, erreur: ErreurLancer) -> String {
     match erreur {
         ErreurLancer::DirectiveInconnue(ligne) => {
             format!("scénario {} : directive inconnue à la ligne {ligne}", chemin.display())
+        }
+        ErreurLancer::Calcul(pas) => {
+            format!("scénario {} : le calcul s'arrête au pas {pas} (conductances trop étalées)", chemin.display())
         }
     }
 }
