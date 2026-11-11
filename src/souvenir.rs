@@ -207,7 +207,8 @@
 //! echelle` pixels, comme dans `rendu`. [`AGENT`] est la couleur d'un nœud de niveau 255.
 
 use crate::graphe::Graphe;
-use crate::rendu::Image;
+use crate::rendu::{ECART, Image};
+use crate::tubes;
 
 /// Le nombre de sous-pas au-delà duquel [`Agent::avancer`] refuse : `1_000_000`.
 pub const MAX_SOUS_PAS: usize = 1_000_000;
@@ -263,7 +264,6 @@ pub struct Bilan {
 
 /// L'agent d'un réseau : une concentration par nœud (voir « L'état »).
 #[derive(Clone, Debug, PartialEq)]
-#[allow(dead_code)]
 pub struct Agent {
     concentrations: Vec<f64>,
 }
@@ -274,9 +274,53 @@ pub struct Agent {
 ///
 /// `Taille` (`flux.len()` n'est pas le nombre d'arêtes), `Flux(e)`, `Diffusion`, `Perte`, puis `Debordement` si un taux
 /// n'est pas fini, dans cet ordre.
-#[allow(unused_variables)]
 pub fn taux_de_depart(graphe: &Graphe, flux: &[f64], transport: &Transport) -> Result<Vec<f64>, ErreurAgent> {
-    todo!()
+    if flux.len() != graphe.nb_aretes() {
+        return Err(ErreurAgent::Taille);
+    }
+    for (e, &q) in flux.iter().enumerate() {
+        if !q.is_finite() {
+            return Err(ErreurAgent::Flux(e));
+        }
+    }
+    if !(transport.diffusion.is_finite() && transport.diffusion >= 0.0) {
+        return Err(ErreurAgent::Diffusion);
+    }
+    if !(transport.perte.is_finite() && transport.perte >= 0.0) {
+        return Err(ErreurAgent::Perte);
+    }
+    let (taux, _) = taux_et_sorties(graphe, flux, transport.diffusion, transport.perte);
+    if taux.iter().any(|&r| !r.is_finite()) {
+        return Err(ErreurAgent::Debordement);
+    }
+    Ok(taux)
+}
+
+/// Les taux de départ `r_i` et les sorties `sortie_i` d'un pas, sur des entrées déjà vérifiées (voir « Le pas, à la
+/// lettre »). L'ordre des sommes est celui de la doc : par nœud croissant, puis par arête de `incidentes`.
+fn taux_et_sorties(graphe: &Graphe, flux: &[f64], kappa: f64, k: f64) -> (Vec<f64>, Vec<f64>) {
+    let n = graphe.nb_noeuds();
+    let mut taux = vec![0.0; n];
+    let mut sorties = vec![0.0; n];
+    for i in 0..n {
+        let mut r = 0.0;
+        let mut s = 0.0;
+        for &e in graphe.incidentes(i) {
+            let arete = &graphe.aretes()[e];
+            let q = if arete.a == i { flux[e] } else { -flux[e] };
+            s += q;
+            if q > 0.0 {
+                r += q;
+            }
+            r += kappa / arete.longueur;
+        }
+        let sortie = if s < 0.0 { -s } else { 0.0 };
+        r += sortie;
+        r += k;
+        taux[i] = r;
+        sorties[i] = sortie;
+    }
+    (taux, sorties)
 }
 
 /// Le pas maximal : le plus grand `h` tel que `h * r_max <= 1.0` en flottants, `f64::INFINITY` si `r_max == 0.0` (voir
@@ -285,9 +329,36 @@ pub fn taux_de_depart(graphe: &Graphe, flux: &[f64], transport: &Transport) -> R
 /// # Erreurs
 ///
 /// Celles de [`taux_de_depart`].
-#[allow(unused_variables)]
 pub fn pas_maximal(graphe: &Graphe, flux: &[f64], transport: &Transport) -> Result<f64, ErreurAgent> {
-    todo!()
+    let taux = taux_de_depart(graphe, flux, transport)?;
+    Ok(pas_maximal_depuis_taux(&taux))
+}
+
+/// Le plus grand flottant `h` tel que `h * r_max <= 1.0`, à partir de taux finis (voir « Le taux de départ et le pas
+/// maximal »).
+fn pas_maximal_depuis_taux(taux: &[f64]) -> f64 {
+    let mut r_max = 0.0;
+    for &r in taux {
+        if r > r_max {
+            r_max = r;
+        }
+    }
+    if r_max == 0.0 {
+        return f64::INFINITY;
+    }
+    let mut h = 1.0 / r_max;
+    while h * r_max > 1.0 {
+        h = f64::from_bits(h.to_bits() - 1);
+    }
+    loop {
+        let suivant = f64::from_bits(h.to_bits() + 1);
+        if suivant * r_max <= 1.0 {
+            h = suivant;
+        } else {
+            break;
+        }
+    }
+    h
 }
 
 /// Le nombre de sous-pas : le plus petit entier `n >= 1` tel que `h / (n as f64) <= h_max` en flottants (voir « Le pas
@@ -297,9 +368,24 @@ pub fn pas_maximal(graphe: &Graphe, flux: &[f64], transport: &Transport) -> Resu
 /// # Panique
 ///
 /// Si `h` n'est pas un nombre fini `> 0.0`, ou si `h_max` n'est pas `> 0.0` (l'infini est permis ; NaN panique).
-#[allow(unused_variables)]
 pub fn nombre_de_sous_pas(h: f64, h_max: f64) -> usize {
-    todo!()
+    assert!(h.is_finite() && h > 0.0, "le pas doit être un nombre fini strictement positif");
+    assert!(h_max > 0.0, "le pas maximal doit être strictement positif (l'infini est permis)");
+    if h <= h_max {
+        return 1;
+    }
+    let quotient = h / h_max;
+    if !quotient.is_finite() || quotient > (MAX_SOUS_PAS + 2) as f64 {
+        return MAX_SOUS_PAS + 1;
+    }
+    let mut n = quotient.ceil() as usize;
+    while h / (n as f64) > h_max {
+        n += 1;
+    }
+    while n > 1 && h / ((n - 1) as f64) <= h_max {
+        n -= 1;
+    }
+    n
 }
 
 /// **Un seul pas** de la recette de « Le pas, à la lettre », avec le `h` donné, **sans le comparer au pas maximal** :
@@ -309,7 +395,6 @@ pub fn nombre_de_sous_pas(h: f64, h_max: f64) -> usize {
 /// # Erreurs
 ///
 /// Celles de « Les vérifications », points 1 à 7, dans cet ordre.
-#[allow(unused_variables)]
 pub fn pas_sans_decoupage(
     graphe: &Graphe,
     flux: &[f64],
@@ -318,14 +403,113 @@ pub fn pas_sans_decoupage(
     apports: &[(usize, f64)],
     h: f64,
 ) -> Result<(Vec<f64>, Bilan), ErreurAgent> {
-    todo!()
+    verifier_entrees(graphe, flux, concentrations, transport, apports, h)?;
+    un_pas(
+        graphe,
+        flux,
+        concentrations,
+        transport,
+        apports,
+        h,
+        &taux_et_sorties(graphe, flux, transport.diffusion, transport.perte),
+    )
+}
+
+/// Les vérifications 1 à 6 de « Les vérifications », dans leur ordre.
+fn verifier_entrees(
+    graphe: &Graphe,
+    flux: &[f64],
+    concentrations: &[f64],
+    transport: &Transport,
+    apports: &[(usize, f64)],
+    h: f64,
+) -> Result<(), ErreurAgent> {
+    if concentrations.len() != graphe.nb_noeuds() || flux.len() != graphe.nb_aretes() {
+        return Err(ErreurAgent::Taille);
+    }
+    for (i, &c) in concentrations.iter().enumerate() {
+        if !(c.is_finite() && c >= 0.0) {
+            return Err(ErreurAgent::Concentration(i));
+        }
+    }
+    for (e, &q) in flux.iter().enumerate() {
+        if !q.is_finite() {
+            return Err(ErreurAgent::Flux(e));
+        }
+    }
+    if !(transport.diffusion.is_finite() && transport.diffusion >= 0.0) {
+        return Err(ErreurAgent::Diffusion);
+    }
+    if !(transport.perte.is_finite() && transport.perte >= 0.0) {
+        return Err(ErreurAgent::Perte);
+    }
+    if !(h.is_finite() && h > 0.0) {
+        return Err(ErreurAgent::Pas);
+    }
+    let nb_noeuds = graphe.nb_noeuds();
+    for (rang, &(noeud, debit)) in apports.iter().enumerate() {
+        if noeud >= nb_noeuds || !(debit.is_finite() && debit >= 0.0) {
+            return Err(ErreurAgent::Apport(rang));
+        }
+    }
+    Ok(())
+}
+
+/// Un pas de la recette de « Le pas, à la lettre », sur des entrées déjà vérifiées, avec les taux et sorties donnés :
+/// vérifie `Debordement` (point 7) avant tout calcul de concentration, puis après le calcul.
+fn un_pas(
+    graphe: &Graphe,
+    flux: &[f64],
+    concentrations: &[f64],
+    transport: &Transport,
+    apports: &[(usize, f64)],
+    h: f64,
+    taux: &(Vec<f64>, Vec<f64>),
+) -> Result<(Vec<f64>, Bilan), ErreurAgent> {
+    let (r, sorties) = taux;
+    if r.iter().any(|&x| !x.is_finite()) {
+        return Err(ErreurAgent::Debordement);
+    }
+    let n = graphe.nb_noeuds();
+    let mut gains = vec![0.0; n];
+    for (i, gain) in gains.iter_mut().enumerate() {
+        let mut g = 0.0;
+        for &e in graphe.incidentes(i) {
+            let arete = &graphe.aretes()[e];
+            let j = if arete.a == i { arete.b } else { arete.a };
+            let q = if arete.a == i { flux[e] } else { -flux[e] };
+            if q < 0.0 {
+                g += (h * (-q)) * concentrations[j];
+            }
+            g += (h * (transport.diffusion / arete.longueur)) * concentrations[j];
+        }
+        *gain = g;
+    }
+    let mut apres = vec![0.0; n];
+    for i in 0..n {
+        apres[i] = (1.0 - h * r[i]) * concentrations[i] + gains[i];
+    }
+    let mut sortie = 0.0;
+    let mut perte = 0.0;
+    for i in 0..n {
+        sortie += (h * sorties[i]) * concentrations[i];
+        perte += (h * transport.perte) * concentrations[i];
+    }
+    let mut apport = 0.0;
+    for &(noeud, debit) in apports {
+        apres[noeud] += h * debit;
+        apport += h * debit;
+    }
+    if apres.iter().any(|&x| !x.is_finite()) || !sortie.is_finite() || !perte.is_finite() || !apport.is_finite() {
+        return Err(ErreurAgent::Debordement);
+    }
+    Ok((apres, Bilan { sortie, perte, apport, sous_pas: 1 }))
 }
 
 impl Agent {
     /// Un agent à zéro : `graphe.nb_noeuds()` concentrations égales à `+0.0`.
-    #[allow(unused_variables)]
     pub fn zero(graphe: &Graphe) -> Agent {
-        todo!()
+        Agent { concentrations: vec![0.0; graphe.nb_noeuds()] }
     }
 
     /// Un agent de concentrations données (une par nœud, dans l'ordre des indices).
@@ -335,19 +519,30 @@ impl Agent {
     /// Dans cet ordre : `ErreurAgent::Taille` si `concentrations.len()` n'est pas `graphe.nb_noeuds()` ; puis
     /// `ErreurAgent::Concentration(i)`, `i` étant le plus petit indice d'une concentration qui n'est pas un nombre fini
     /// `>= 0.0` (`0.0` et `-0.0` sont acceptés ; NaN, l'infini et les négatifs sont refusés).
-    #[allow(unused_variables)]
     pub fn new(graphe: &Graphe, concentrations: Vec<f64>) -> Result<Agent, ErreurAgent> {
-        todo!()
+        if concentrations.len() != graphe.nb_noeuds() {
+            return Err(ErreurAgent::Taille);
+        }
+        for (i, &c) in concentrations.iter().enumerate() {
+            if !(c.is_finite() && c >= 0.0) {
+                return Err(ErreurAgent::Concentration(i));
+            }
+        }
+        Ok(Agent { concentrations })
     }
 
     /// Les concentrations, dans l'ordre des indices de nœud.
     pub fn concentrations(&self) -> &[f64] {
-        todo!()
+        &self.concentrations
     }
 
     /// La masse d'agent : la somme des concentrations, de gauche à droite à partir de `0.0` (`0.0` pour zéro nœud).
     pub fn masse(&self) -> f64 {
-        todo!()
+        let mut masse = 0.0;
+        for &c in &self.concentrations {
+            masse += c;
+        }
+        masse
     }
 
     /// Le pas public : découpe `h` en sous-pas égaux (voir « Le pas public et son découpage »), les joue avec les flux
@@ -357,7 +552,6 @@ impl Agent {
     /// # Erreurs
     ///
     /// Celles de « Les vérifications », points 1 à 8, dans cet ordre ; **sur une erreur, l'agent n'a pas changé**.
-    #[allow(unused_variables)]
     pub fn avancer(
         &mut self,
         graphe: &Graphe,
@@ -366,7 +560,68 @@ impl Agent {
         apports: &[(usize, f64)],
         h: f64,
     ) -> Result<Bilan, ErreurAgent> {
-        todo!()
+        verifier_entrees(graphe, flux, &self.concentrations, transport, apports, h)?;
+        let (r, sorties) = taux_et_sorties(graphe, flux, transport.diffusion, transport.perte);
+        // Point 7 avant le point 8 : un taux non fini passe avant `SousPas`.
+        if r.iter().any(|&x| !x.is_finite()) {
+            return Err(ErreurAgent::Debordement);
+        }
+        let h_max = pas_maximal_depuis_taux(&r);
+        let n = nombre_de_sous_pas(h, h_max);
+        if n > MAX_SOUS_PAS {
+            return Err(ErreurAgent::SousPas);
+        }
+        let nb_noeuds = graphe.nb_noeuds();
+        let h_sous = h / (n as f64);
+        // Tout se calcule dans des tampons locaux ; l'agent n'est écrit qu'à la fin, si tout a réussi.
+        let mut courant = self.concentrations.clone();
+        let mut suivant = vec![0.0; nb_noeuds];
+        let mut gains = vec![0.0; nb_noeuds];
+        let mut total_sortie = 0.0;
+        let mut total_perte = 0.0;
+        let mut total_apport = 0.0;
+        for _ in 0..n {
+            for (i, gain) in gains.iter_mut().enumerate() {
+                let mut g = 0.0;
+                for &e in graphe.incidentes(i) {
+                    let arete = &graphe.aretes()[e];
+                    let j = if arete.a == i { arete.b } else { arete.a };
+                    let q = if arete.a == i { flux[e] } else { -flux[e] };
+                    if q < 0.0 {
+                        g += (h_sous * (-q)) * courant[j];
+                    }
+                    g += (h_sous * (transport.diffusion / arete.longueur)) * courant[j];
+                }
+                *gain = g;
+            }
+            for i in 0..nb_noeuds {
+                suivant[i] = (1.0 - h_sous * r[i]) * courant[i] + gains[i];
+            }
+            let mut sortie = 0.0;
+            let mut perte = 0.0;
+            for i in 0..nb_noeuds {
+                sortie += (h_sous * sorties[i]) * courant[i];
+                perte += (h_sous * transport.perte) * courant[i];
+            }
+            let mut apport = 0.0;
+            for &(noeud, debit) in apports {
+                suivant[noeud] += h_sous * debit;
+                apport += h_sous * debit;
+            }
+            if suivant.iter().any(|&x| !x.is_finite())
+                || !sortie.is_finite()
+                || !perte.is_finite()
+                || !apport.is_finite()
+            {
+                return Err(ErreurAgent::Debordement);
+            }
+            total_sortie += sortie;
+            total_perte += perte;
+            total_apport += apport;
+            std::mem::swap(&mut courant, &mut suivant);
+        }
+        self.concentrations = courant;
+        Ok(Bilan { sortie: total_sortie, perte: total_perte, apport: total_apport, sous_pas: n })
     }
 }
 
@@ -377,7 +632,6 @@ impl Agent {
 ///
 /// Si `echelle` vaut 0, si `reference_tubes` ou `reference_agent` n'est pas un nombre fini `> 0.0`, si
 /// `conductivites.len()` n'est pas le nombre d'arêtes ou si `concentrations.len()` n'est pas le nombre de nœuds.
-#[allow(unused_variables)]
 pub fn apercu(
     graphe: &Graphe,
     conductivites: &[f64],
@@ -386,5 +640,84 @@ pub fn apercu(
     reference_agent: f64,
     echelle: u32,
 ) -> Image {
-    todo!()
+    assert!(echelle > 0, "l'échelle doit être strictement positive");
+    assert!(
+        reference_tubes.is_finite() && reference_tubes > 0.0,
+        "la référence des tubes doit être un nombre fini strictement positif"
+    );
+    assert!(
+        reference_agent.is_finite() && reference_agent > 0.0,
+        "la référence de l'agent doit être un nombre fini strictement positif"
+    );
+    assert_eq!(conductivites.len(), graphe.nb_aretes(), "il faut une conductivité par arête");
+    assert_eq!(concentrations.len(), graphe.nb_noeuds(), "il faut une concentration par nœud");
+
+    // Le treillis des tubes, au point près.
+    let mut image = tubes::apercu(graphe, conductivites, reference_tubes, 1);
+
+    // Les positions des nœuds sur ce treillis, comme dans `tubes::apercu`.
+    let noeuds = graphe.noeuds();
+    let mut xmin = noeuds[0].x as i64;
+    let mut xmax = xmin;
+    let mut ymin = noeuds[0].y as i64;
+    let mut ymax = ymin;
+    for noeud in &noeuds[1..] {
+        let x = noeud.x as i64;
+        let y = noeud.y as i64;
+        xmin = xmin.min(x);
+        xmax = xmax.max(x);
+        ymin = ymin.min(y);
+        ymax = ymax.max(y);
+    }
+    let tl = 2 * (xmax - xmin) + 1;
+    let pas = tl + ECART as i64;
+    let l = image.largeur as usize;
+    for (i, noeud) in noeuds.iter().enumerate() {
+        let col = noeud.etage as i64 * pas + 2 * (noeud.x as i64 - xmin);
+        let ligne = 2 * (noeud.y as i64 - ymin);
+        let rang = 3 * (ligne as usize * l + col as usize);
+        let avant = [image.rvb[rang], image.rvb[rang + 1], image.rvb[rang + 2]];
+        let n = niveau_concentration(concentrations[i], reference_agent);
+        let couleur = melange(avant, AGENT, n);
+        image.rvb[rang..rang + 3].copy_from_slice(&couleur);
+    }
+
+    // Chaque point du treillis devient un carré de `echelle × echelle` pixels.
+    let e = echelle as usize;
+    let largeur = l * e;
+    let hauteur = image.hauteur as usize * e;
+    let mut rvb = Vec::with_capacity(3 * largeur * hauteur);
+    for ligne in 0..image.hauteur as usize {
+        let mut rangee = Vec::with_capacity(3 * largeur);
+        let debut = 3 * ligne * l;
+        for point in image.rvb[debut..debut + 3 * l].as_chunks::<3>().0 {
+            let couleur = [point[0], point[1], point[2]];
+            for _ in 0..e {
+                rangee.extend_from_slice(&couleur);
+            }
+        }
+        for _ in 0..e {
+            rvb.extend_from_slice(&rangee);
+        }
+    }
+    Image { largeur: largeur as u32, hauteur: hauteur as u32, rvb }
+}
+
+/// Le niveau d'une concentration pour une référence, en entiers (voir « L'aperçu »).
+fn niveau_concentration(c: f64, reference: f64) -> u8 {
+    let t = c / reference;
+    if t >= 1.0 {
+        255
+    } else if t > 0.0 {
+        (t * 255.0).round() as u8
+    } else {
+        0
+    }
+}
+
+/// Le mélange entier de deux couleurs, canal par canal, au niveau `n` (voir « L'aperçu »).
+fn melange(a: [u8; 3], b: [u8; 3], n: u8) -> [u8; 3] {
+    let n = u32::from(n);
+    let canal = |a: u8, b: u8| -> u8 { ((u32::from(a) * (255 - n) + u32::from(b) * n + 127) / 255) as u8 };
+    [canal(a[0], b[0]), canal(a[1], b[1]), canal(a[2], b[2])]
 }
