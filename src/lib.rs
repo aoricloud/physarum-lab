@@ -13,6 +13,7 @@ pub mod labyrinthe;
 pub mod lancer;
 pub mod mesures;
 pub mod rendu;
+pub mod reseaux;
 pub mod scenario;
 pub mod solveur;
 pub mod souvenir;
