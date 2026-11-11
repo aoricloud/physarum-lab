@@ -157,10 +157,12 @@
 //! [`NOURRITURE`].
 
 use crate::alea::Alea;
-use crate::graphe::Graphe;
-use crate::rendu::Image;
-use crate::solveur::ErreurSolveur;
-use crate::tubes::Etat;
+use crate::chemins::plus_courts;
+use crate::graphe::{Arete, Graphe};
+use crate::mesures::tubes_vifs;
+use crate::rendu::{ECART, Image};
+use crate::solveur::{ErreurSolveur, flux, pressions};
+use crate::tubes::{Etat, PLANCHER, Tubes};
 
 /// Le seuil d'un tube vif pour les réseaux dans `lancer` : `0.001`.
 pub const SEUIL_VIF: f64 = 0.001;
@@ -179,9 +181,14 @@ pub enum Loi {
 
 impl Loi {
     /// `f(q)` à la lettre (voir « La loi » dans la documentation du module).
-    #[allow(unused_variables)]
     pub fn valeur(self, q: f64) -> f64 {
-        todo!()
+        match self {
+            Loi::Lineaire => q.abs(),
+            Loi::Sigmoide => {
+                let q2 = q * q;
+                if q2 == f64::INFINITY { 1.0 } else { q2 / (1.0 + q2) }
+            }
+        }
     }
 }
 
@@ -224,14 +231,37 @@ pub struct PasReseau {
 /// # Panique
 ///
 /// Si `k < 2` (ou si `k` ne tient pas dans un `u32`).
-#[allow(unused_variables)]
 pub fn tirer_paire(alea: &mut Alea, k: usize) -> (usize, usize) {
-    todo!()
+    assert!(k >= 2, "il faut au moins deux nourritures");
+    let borne = u32::try_from(k).expect("k doit tenir dans un u32");
+    let i = alea.borne(borne) as usize;
+    let mut j = alea.borne(borne - 1) as usize;
+    if j >= i {
+        j += 1;
+    }
+    (i, j)
+}
+
+/// Vrai si `nourritures` a au moins deux nœuds, tous dans le graphe et tous différents.
+fn nourritures_valides(graphe: &Graphe, nourritures: &[usize]) -> bool {
+    if nourritures.len() < 2 {
+        return false;
+    }
+    for (r, &n) in nourritures.iter().enumerate() {
+        if n >= graphe.nb_noeuds() || nourritures[..r].contains(&n) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Vrai si `debit` est un nombre fini `> 0.0`.
+fn debit_valide(debit: f64) -> bool {
+    debit.is_finite() && debit > 0.0
 }
 
 /// Les tubes d'un réseau entre des sources de nourriture (voir la documentation du module).
 #[derive(Clone, Debug, PartialEq)]
-#[allow(dead_code)]
 pub struct Reseau {
     conductivites: Vec<f64>,
     nourritures: Vec<usize>,
@@ -245,7 +275,6 @@ impl Reseau {
     /// # Erreurs
     ///
     /// Celles de « Les vérifications » : `Taille`, `Conductivite(e)`, `Nourriture`, `Debit`, dans cet ordre.
-    #[allow(unused_variables)]
     pub fn new(
         graphe: &Graphe,
         conductivites: Vec<f64>,
@@ -253,7 +282,21 @@ impl Reseau {
         debit: f64,
         loi: Loi,
     ) -> Result<Reseau, ErreurReseau> {
-        todo!()
+        if conductivites.len() != graphe.nb_aretes() {
+            return Err(ErreurReseau::Taille);
+        }
+        for (e, &d) in conductivites.iter().enumerate() {
+            if !(d.is_finite() && d >= PLANCHER) {
+                return Err(ErreurReseau::Conductivite(e));
+            }
+        }
+        if !nourritures_valides(graphe, &nourritures) {
+            return Err(ErreurReseau::Nourriture);
+        }
+        if !debit_valide(debit) {
+            return Err(ErreurReseau::Debit);
+        }
+        Ok(Reseau { conductivites, nourritures, debit, loi })
     }
 
     /// Un réseau aux conductivités de départ de `Tubes::au_hasard(graphe, alea)` (voir « Les conductivités de départ
@@ -262,7 +305,6 @@ impl Reseau {
     /// # Erreurs
     ///
     /// `Nourriture`, puis `Debit`, avant tout tirage : sur une erreur, `alea` n'a pas bougé.
-    #[allow(unused_variables)]
     pub fn au_hasard(
         graphe: &Graphe,
         alea: &mut Alea,
@@ -270,27 +312,34 @@ impl Reseau {
         debit: f64,
         loi: Loi,
     ) -> Result<Reseau, ErreurReseau> {
-        todo!()
+        if !nourritures_valides(graphe, &nourritures) {
+            return Err(ErreurReseau::Nourriture);
+        }
+        if !debit_valide(debit) {
+            return Err(ErreurReseau::Debit);
+        }
+        let tubes = Tubes::au_hasard(graphe, alea);
+        Ok(Reseau { conductivites: tubes.conductivites().to_vec(), nourritures, debit, loi })
     }
 
     /// Les conductivités, dans l'ordre des indices d'arête.
     pub fn conductivites(&self) -> &[f64] {
-        todo!()
+        &self.conductivites
     }
 
     /// Les nœuds de nourriture, par rang (dans l'ordre donné à la construction).
     pub fn nourritures(&self) -> &[usize] {
-        todo!()
+        &self.nourritures
     }
 
     /// Le débit `I0`.
     pub fn debit(&self) -> f64 {
-        todo!()
+        self.debit
     }
 
     /// La loi.
     pub fn loi(&self) -> Loi {
-        todo!()
+        self.loi
     }
 
     /// Un pas pour la paire donnée (voir « Le pas à plusieurs sources de nourriture », points 2 et 3) : la source
@@ -300,7 +349,6 @@ impl Reseau {
     ///
     /// `Taille`, `Nourriture`, `Noeud`, `Pas`, `Solveur(erreur)`, dans cet ordre (voir « Les vérifications ») ; rien
     /// n'a changé sur une erreur.
-    #[allow(unused_variables)]
     pub fn avancer_paire(
         &mut self,
         graphe: &Graphe,
@@ -308,7 +356,44 @@ impl Reseau {
         puits: usize,
         h: f64,
     ) -> Result<PasReseau, ErreurReseau> {
-        todo!()
+        if graphe.nb_aretes() != self.conductivites.len() {
+            return Err(ErreurReseau::Taille);
+        }
+        if self.nourritures.iter().any(|&n| n >= graphe.nb_noeuds()) {
+            return Err(ErreurReseau::Nourriture);
+        }
+        if source >= graphe.nb_noeuds() || puits >= graphe.nb_noeuds() || source == puits {
+            return Err(ErreurReseau::Noeud);
+        }
+        if !(h.is_finite() && h > 0.0 && h < 1.0) {
+            return Err(ErreurReseau::Pas);
+        }
+        self.calculer_et_mettre_a_jour(graphe, source, puits, h)
+    }
+
+    /// Le calcul et la mise à jour d'un pas, une fois les vérifications faites (sauf celles du solveur).
+    fn calculer_et_mettre_a_jour(
+        &mut self,
+        graphe: &Graphe,
+        source: usize,
+        puits: usize,
+        h: f64,
+    ) -> Result<PasReseau, ErreurReseau> {
+        let mut conductances = Vec::with_capacity(graphe.nb_aretes());
+        for e in 0..graphe.nb_aretes() {
+            conductances.push(self.conductivites[e] / graphe.aretes()[e].cout);
+        }
+        let mut injections = vec![0.0; graphe.nb_noeuds()];
+        injections[source] = self.debit;
+        let p = pressions(graphe, &conductances, &injections, puits).map_err(ErreurReseau::Solveur)?;
+        let q = flux(graphe, &conductances, &p);
+        let mut mises_a_jour = Vec::with_capacity(self.conductivites.len());
+        for (e, &q_e) in q.iter().enumerate() {
+            let d = self.conductivites[e] + h * (self.loi.valeur(q_e) - self.conductivites[e]);
+            mises_a_jour.push(if d >= PLANCHER { d } else { PLANCHER });
+        }
+        self.conductivites = mises_a_jour;
+        Ok(PasReseau { source, puits, etat: Etat { pressions: p, flux: q } })
     }
 
     /// Un pas complet : tire la paire avec `alea` (`tirer_paire`), puis la fait avancer (voir « Le pas à plusieurs
@@ -319,9 +404,22 @@ impl Reseau {
     /// `Taille`, `Nourriture`, `Pas`, `Solveur(erreur)`, dans cet ordre ; sur une erreur, ni les conductivités ni
     /// `alea` n'ont changé (les trois premières se vérifient avant le tirage ; pour `Solveur`, le tirage se fait sur
     /// une copie de `alea`, recopiée dans `alea` seulement si le pas réussit).
-    #[allow(unused_variables)]
     pub fn avancer(&mut self, graphe: &Graphe, alea: &mut Alea, h: f64) -> Result<PasReseau, ErreurReseau> {
-        todo!()
+        if graphe.nb_aretes() != self.conductivites.len() {
+            return Err(ErreurReseau::Taille);
+        }
+        if self.nourritures.iter().any(|&n| n >= graphe.nb_noeuds()) {
+            return Err(ErreurReseau::Nourriture);
+        }
+        if !(h.is_finite() && h > 0.0 && h < 1.0) {
+            return Err(ErreurReseau::Pas);
+        }
+        let mut copie = alea.clone();
+        let (i, j) = tirer_paire(&mut copie, self.nourritures.len());
+        let (source, puits) = (self.nourritures[i], self.nourritures[j]);
+        let pas = self.calculer_et_mettre_a_jour(graphe, source, puits, h)?;
+        *alea = copie;
+        Ok(pas)
     }
 }
 
@@ -342,9 +440,91 @@ pub struct Arbre {
 ///
 /// `ErreurReseau::Nourriture` (moins de deux nœuds, un nœud hors du graphe, deux fois le même), puis
 /// `ErreurReseau::Coupee` (deux nourritures non reliées dans le graphe).
-#[allow(unused_variables)]
 pub fn arbre_couvrant(graphe: &Graphe, nourritures: &[usize]) -> Result<Arbre, ErreurReseau> {
-    todo!()
+    if !nourritures_valides(graphe, nourritures) {
+        return Err(ErreurReseau::Nourriture);
+    }
+    let k = nourritures.len();
+    let par_longueur = graphe_des_longueurs(graphe, |_| true);
+    // distance[i][j] pour i < j, lue depuis i.
+    let mut distance = vec![vec![0.0_f64; k]; k];
+    for i in 0..k {
+        let chemins = plus_courts(&par_longueur, nourritures[i]);
+        for j in (i + 1)..k {
+            let d = chemins.distances[nourritures[j]];
+            if d == f64::INFINITY {
+                return Err(ErreurReseau::Coupee);
+            }
+            distance[i][j] = d;
+        }
+    }
+    // Kruskal sur les paires triées par (distance, i, j).
+    let mut candidates = Vec::with_capacity(k * (k - 1) / 2);
+    for (i, ligne) in distance.iter().enumerate() {
+        for (j, &d) in ligne.iter().enumerate().skip(i + 1) {
+            candidates.push((d, i, j));
+        }
+    }
+    candidates.sort_by(|a, b| a.0.partial_cmp(&b.0).expect("distances finies").then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+    let mut composante: Vec<usize> = (0..k).collect();
+    let mut paires = Vec::with_capacity(k - 1);
+    let mut longueur = 0.0;
+    for &(d, i, j) in &candidates {
+        let (ci, cj) = (composante[i], composante[j]);
+        if ci != cj {
+            for c in composante.iter_mut() {
+                if *c == cj {
+                    *c = ci;
+                }
+            }
+            paires.push((i, j));
+            longueur += d;
+        }
+    }
+    // La distance dans l'arbre : pour chaque i, un parcours depuis i.
+    let mut voisins: Vec<Vec<usize>> = vec![Vec::new(); k];
+    for &(i, j) in &paires {
+        voisins[i].push(j);
+        voisins[j].push(i);
+    }
+    let mut somme = 0.0;
+    for i in 0..k {
+        let mut d = vec![f64::NAN; k];
+        d[i] = 0.0;
+        let mut pile = vec![i];
+        while let Some(u) = pile.pop() {
+            for &v in &voisins[u] {
+                if d[v].is_nan() {
+                    d[v] = d[u] + distance[u.min(v)][u.max(v)];
+                    pile.push(v);
+                }
+            }
+        }
+        for &dj in &d[(i + 1)..k] {
+            somme += dj;
+        }
+    }
+    let distance_moyenne = somme / ((k * (k - 1) / 2) as f64);
+    Ok(Arbre { paires, longueur, distance_moyenne })
+}
+
+/// Le graphe où le coût de chaque arête gardée par `garder` (selon son indice) est sa longueur : mêmes nœuds, mêmes
+/// arêtes dans le même ordre.
+fn graphe_des_longueurs(graphe: &Graphe, garder: impl Fn(usize) -> bool) -> Graphe {
+    let aretes: Vec<Arete> = graphe
+        .aretes()
+        .iter()
+        .enumerate()
+        .filter(|&(e, _)| garder(e))
+        .map(|(_, a)| Arete { a: a.a, b: a.b, longueur: a.longueur, cout: a.longueur })
+        .collect();
+    Graphe::new(graphe.noeuds().to_vec(), aretes).expect("les arêtes d'un graphe valide restent valides")
+}
+
+/// Les vérifications communes de `distance_moyenne` et `tenue`.
+fn verifier_mesure(graphe: &Graphe, conductivites: &[f64], nourritures: &[usize]) {
+    assert_eq!(conductivites.len(), graphe.nb_aretes(), "il faut une conductivité par arête");
+    assert!(nourritures_valides(graphe, nourritures), "il faut au moins deux nourritures distinctes du graphe");
 }
 
 /// `MD` : la distance moyenne entre les nourritures dans le réseau vif (voir « Les trois mesures du réseau »), `+inf`
@@ -354,9 +534,43 @@ pub fn arbre_couvrant(graphe: &Graphe, nourritures: &[usize]) -> Result<Arbre, E
 ///
 /// Si `conductivites.len()` n'est pas `graphe.nb_aretes()`, ou si `nourritures` a moins de deux nœuds, un nœud hors du
 /// graphe ou deux fois le même.
-#[allow(unused_variables)]
 pub fn distance_moyenne(graphe: &Graphe, conductivites: &[f64], nourritures: &[usize], seuil: f64) -> f64 {
-    todo!()
+    verifier_mesure(graphe, conductivites, nourritures);
+    let k = nourritures.len();
+    let vif = graphe_des_longueurs(graphe, |e| conductivites[e] >= seuil);
+    let mut somme = 0.0;
+    for (i, &depart) in nourritures.iter().enumerate() {
+        let chemins = plus_courts(&vif, depart);
+        for &arrivee in &nourritures[(i + 1)..] {
+            let d = chemins.distances[arrivee];
+            if d == f64::INFINITY {
+                return f64::INFINITY;
+            }
+            somme += d;
+        }
+    }
+    somme / ((k * (k - 1) / 2) as f64)
+}
+
+/// Les composantes (par un représentant) du réseau vif privé de l'arête `sauf` (s'il y en a une).
+fn composantes(graphe: &Graphe, conductivites: &[f64], seuil: f64, sauf: Option<usize>) -> Vec<usize> {
+    fn racine(rep: &mut [usize], mut x: usize) -> usize {
+        while rep[x] != x {
+            rep[x] = rep[rep[x]];
+            x = rep[x];
+        }
+        x
+    }
+    let mut rep: Vec<usize> = (0..graphe.nb_noeuds()).collect();
+    for (e, arete) in graphe.aretes().iter().enumerate() {
+        if conductivites[e] >= seuil && Some(e) != sauf {
+            let (ra, rb) = (racine(&mut rep, arete.a), racine(&mut rep, arete.b));
+            if ra != rb {
+                rep[ra.max(rb)] = ra.min(rb);
+            }
+        }
+    }
+    (0..graphe.nb_noeuds()).map(|v| racine(&mut rep, v)).collect()
 }
 
 /// `FT` : la part des tubes vifs dont la panne seule ne coupe aucune nourriture d'une autre (voir « Les trois mesures
@@ -365,9 +579,33 @@ pub fn distance_moyenne(graphe: &Graphe, conductivites: &[f64], nourritures: &[u
 /// # Panique
 ///
 /// Comme [`distance_moyenne`].
-#[allow(unused_variables)]
 pub fn tenue(graphe: &Graphe, conductivites: &[f64], nourritures: &[usize], seuil: f64) -> f64 {
-    todo!()
+    verifier_mesure(graphe, conductivites, nourritures);
+    let k = nourritures.len();
+    let entier = composantes(graphe, conductivites, seuil, None);
+    let mut vifs = 0_usize;
+    let mut surs = 0_usize;
+    for e in 0..graphe.nb_aretes() {
+        let vif = conductivites[e] >= seuil;
+        if !vif {
+            continue;
+        }
+        vifs += 1;
+        let sans = composantes(graphe, conductivites, seuil, Some(e));
+        let mut coupe = false;
+        for i in 0..k {
+            for j in (i + 1)..k {
+                let (a, b) = (nourritures[i], nourritures[j]);
+                if entier[a] == entier[b] && sans[a] != sans[b] {
+                    coupe = true;
+                }
+            }
+        }
+        if !coupe {
+            surs += 1;
+        }
+    }
+    if vifs == 0 { 0.0 } else { surs as f64 / vifs as f64 }
 }
 
 /// Les trois mesures d'un réseau et leurs rapports à l'arbre couvrant minimal.
@@ -391,14 +629,20 @@ pub struct Mesures {
 ///
 /// `ErreurReseau::Taille` (`conductivites.len()` n'est pas `graphe.nb_aretes()`), puis celles d'`arbre_couvrant`
 /// (`Nourriture`, `Coupee`).
-#[allow(unused_variables)]
 pub fn mesurer(
     graphe: &Graphe,
     conductivites: &[f64],
     nourritures: &[usize],
     seuil: f64,
 ) -> Result<Mesures, ErreurReseau> {
-    todo!()
+    if conductivites.len() != graphe.nb_aretes() {
+        return Err(ErreurReseau::Taille);
+    }
+    let arbre = arbre_couvrant(graphe, nourritures)?;
+    let tl = tubes_vifs(graphe, conductivites, seuil).1;
+    let md = distance_moyenne(graphe, conductivites, nourritures, seuil);
+    let ft = tenue(graphe, conductivites, nourritures, seuil);
+    Ok(Mesures { tl, md, ft, tl_sur_mst: tl / arbre.longueur, md_sur_mst: md / arbre.distance_moyenne })
 }
 
 /// L'aperçu d'un réseau : `tubes::apercu`, puis les nœuds de nourriture en [`NOURRITURE`] (voir « L'aperçu »).
@@ -407,7 +651,26 @@ pub fn mesurer(
 ///
 /// Dans les cas de `tubes::apercu` (`echelle` nulle, `reference` qui n'est pas un nombre fini `> 0.0`, nombre de
 /// conductivités qui n'est pas celui des arêtes), ou si un nœud de `nourritures` n'est pas un nœud du graphe.
-#[allow(unused_variables)]
 pub fn apercu(graphe: &Graphe, conductivites: &[f64], nourritures: &[usize], reference: f64, echelle: u32) -> Image {
-    todo!()
+    let mut image = crate::tubes::apercu(graphe, conductivites, reference, echelle);
+    let noeuds = graphe.noeuds();
+    let xmin = noeuds.iter().map(|n| i64::from(n.x)).min().expect("un graphe a un nœud");
+    let ymin = noeuds.iter().map(|n| i64::from(n.y)).min().expect("un graphe a un nœud");
+    let xmax = noeuds.iter().map(|n| i64::from(n.x)).max().expect("un graphe a un nœud");
+    let tl = 2 * (xmax - xmin) + 1;
+    let echelle = echelle as usize;
+    let largeur = image.largeur as usize;
+    for &n in nourritures {
+        assert!(n < graphe.nb_noeuds(), "le nœud {n} n'est pas dans le graphe");
+        let noeud = noeuds[n];
+        let colonne = (i64::from(noeud.etage) * (tl + i64::from(ECART)) + 2 * (i64::from(noeud.x) - xmin)) as usize;
+        let ligne = (2 * (i64::from(noeud.y) - ymin)) as usize;
+        for py in (echelle * ligne)..(echelle * (ligne + 1)) {
+            for px in (echelle * colonne)..(echelle * (colonne + 1)) {
+                let debut = 3 * (py * largeur + px);
+                image.rvb[debut..debut + 3].copy_from_slice(&NOURRITURE);
+            }
+        }
+    }
+    image
 }
