@@ -328,3 +328,74 @@ un effet de la sigmoïde.
   fausse ; on ne sait pas encore pourquoi, exactement.
 - **Les conductances très étalées** et les mêmes limites du solveur qu'au cœur (`10^10` à `10^16`) ; **Linux** : tout
   est joué sous Windows, la CI rejouera l'empreinte de `references/reseau-graine-1.empreinte`.
+
+## Étape 2 (partie 2T) : l'agent porté par le flux
+
+Le blob se souvient d'un stimulus : un agent soluble, libéré à l'endroit du stimulus, est porté par le liquide qui
+circule dans les tubes. Cette partie pose **seulement le transport** de l'agent sur notre graphe (`souvenir`) : où il
+va, à quelle vitesse, combien en sort. Ce que l'agent fait aux tubes (les assouplir, donc la mémoire) est la partie 2M,
+qui lira les concentrations à chaque pas. Les valeurs attendues des tests, chacune avec sa source, sont dans
+`references/etape-2t-valeurs.md`.
+
+### Ce qui vient de l'article, et ce qui est à nous : `souvenir`
+
+- **Référence** : Kramar et Alim (PNAS 118(10), e2007815118, 2021 ; l'article, sans son supplément, lu : voir
+  `references-etape-2.md` dans les notes du banc). Lu : « un agent chimique soluble est libéré dans le
+  cytoplasme à l'endroit du stimulus ; il assouplit la paroi des tubes ; cet effet se propage dans le réseau quand
+  l'agent est **advecté par les flux cytoplasmiques** » ; la décroissance lente de l'agent (`k_deg = 0,001 s⁻¹`), la
+  diffusivité moléculaire (`10⁻¹⁰ m²/s`), une libération unique.
+- **Leur modèle est celui d'un seul tube** (advection, dispersion de Taylor, décroissance, une libération ; schéma de
+  Crank-Nicolson, pas et maillage non donnés) : **aucune source ne donne ce transport sur un graphe, il est à nous.**
+- **À nous** : une concentration par **nœud** ; chaque nœud est une **chambre de volume 1** (aucune source ne fixe un
+  volume de nœud ; la masse d'agent est la somme des concentrations) ; l'advection en **schéma amont explicite**, avec
+  les flux d'**un pas des tubes** (`Etat::flux`) : la quantité `h |Q| c_donneur` passe du nœud d'où vient le liquide au
+  nœud où il va ; **une diffusion à un seul coefficient** `κ` (`h κ (c_b - c_a) / longueur`) : la dispersion de Taylor
+  n'est **pas** reprise (le dépôt n'a pas de rayon de tube, et l'exposant de la vitesse dans son coefficient n'a pas été
+  relu sur l'image de l'article) ; une **perte** linéaire `k` (la décroissance de l'article) ; des **apports** `(nœud,
+  débit d'agent)`, par où 2M posera un stimulus.
+- **Les bords** : le module ne reçoit ni la source ni le puits, il les déduit des flux. Pour chaque nœud, `s_i` est ce
+  qui part par ses arêtes moins ce qui y arrive ; `s_i < 0` : du liquide quitte le réseau en `i` et emporte l'agent à la
+  concentration de `i` (la **sortie**) ; `s_i > 0` : du liquide entre, sans agent. **La même règle vaut aux nœuds
+  intérieurs**, où `s_i` est nul à l'arrondi près : mesuré, une libération perd par eux au plus `9,2e-15` de sa masse
+  sur 200 pas (40 graines).
+- **Le pas borné** : le schéma garde les concentrations `>= 0` si `h * r_i <= 1` pour chaque nœud (`r_i` : ce qui part
+  du nœud par unité de temps, rapporté à sa concentration). `pas_maximal` rend le plus grand flottant qui le garantit ;
+  le pas public découpe un `h` trop grand en `n` sous-pas égaux (le plus petit `n` tel que `h / n <= h_max`). À la
+  limite exacte, **aucune concentration n'est négative ni `-0.0`** (mesuré : 0 sur 132 000), parce que la recette
+  regroupe ce qui part dans `1 - h r_i` ; une recette à variation signée en rend 204 (jusqu'à `-8,9e-16`).
+- **La recette est fixée à la lettre** (une boucle par nœud, les arêtes dans l'ordre de `incidentes`, chaque somme de
+  gauche à droite) : voir la doc de `souvenir`. Un second calcul, écrit par arête, rend les mêmes bits.
+
+### Les directives et les sorties
+
+Aucune pour l'instant : `lancer` ne change pas dans cette partie. Les directives `stimulus` viendront en 2M, avec
+l'effet de l'agent sur les tubes. L'aperçu de l'agent (`souvenir::apercu`) est celui des tubes (`tubes::apercu`) avec
+les nœuds colorés selon la concentration (la couleur `AGENT`, en entiers) : « la tache d'agent qui suit les tubes ».
+
+### Ce que la partie 2T fait voir
+
+Sur une grille de 12 × 9 à huit voisins, un réseau convergé (300 pas, la ligne droite entre la source et le puits est le
+plus court chemin, unique), un agent lâché près de la source, 30 pas de `0,1` (`κ = 0,01`) : **la part de la masse sur
+les nœuds des tubes vifs vaut 0,85 avec les tubes convergés contre 0,59 avec des tubes uniformes** (mesuré sur 40
+graines : 0,844 au pire contre 0,595 ; l'écart est d'au moins 0,25). Un agent lâché hors des tubes vifs n'est pas
+emporté : 0,06 contre 0,11. C'est le mécanisme de l'article (l'agent suit le flux), **pas une valeur de l'article**.
+
+### Ce que cette partie n'établit pas
+
+- **Aucune valeur de l'article n'est retrouvée** : ni la vitesse du front (15 µm/s), ni les 45 minutes de
+  réorganisation, ni `k_deg` à son échelle ; leur modèle est un tube, le nôtre un graphe.
+- **La dispersion de Taylor n'y est pas** : sur un vrai tube, l'étalement de l'agent dépend du flux ; ici `κ` est un
+  nombre. L'exposant de la vitesse dans le coefficient de l'article n'a pas été relu sur l'image de la page.
+- **Le volume d'un nœud est un choix** (1) : il fixe la vitesse de l'agent (une cellule par unité de temps pour un flux
+  de 1) ; une autre convention change l'échelle de temps, pas la forme du résultat.
+- **Rien ne rétroagit** : l'agent ne change pas les tubes (partie 2M). « La tache suit les tubes » est un fait de
+  transport, pas encore une mémoire.
+- **Un seul stimulus, un seul lâcher** : aucun test d'apports continus longs, ni de deux stimuli. Les flux sont ceux
+  d'un pas des tubes tenu fixe pendant le transport (les tests rejouent aussi les flux changeants d'un réseau à
+  plusieurs sources, sans valeur publiée à viser).
+- **La fuite par les nœuds intérieurs** vient de l'arrondi des flux (`s_i` n'est pas exactement nul) : mesurée,
+  minuscule (`9e-15` sur 200 pas), jamais bornée en général ; sur un réseau convergé, une fuite vers des tubes morts
+  retient aussi l'agent très longtemps (mesuré : une masse de `1e-4` encore là après 1 800 pas de `0,1` sur la grille de
+  12 × 9).
+- **Les tolérances** (le bilan de masse, la fuite, les parts sur les tubes vifs) sont mesurées sur des grilles de 36 à
+  120 nœuds, sous Windows seulement ; la CI rejouera sous Linux (les opérations sont `+ - * /`, donc les mêmes bits).

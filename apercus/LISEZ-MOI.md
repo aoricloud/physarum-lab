@@ -24,3 +24,12 @@ Un aperçu est pour l'œil, jamais une preuve : la preuve, c'est l'empreinte et 
 - `etape-1r-reseau-debit-1.png` : à débit 1, le blob relie ses six nourritures par presque l'arbre le plus court.
 - `etape-1r-reseau-debit-3.png` : à débit 3, il garde quelques routes de secours.
 - `etape-1r-reseau-debit-8.png` : à débit 8, un réseau épais, plein de boucles.
+
+## Étape 2 (l'agent porté par le flux)
+
+Un réseau convergé (la ligne vive entre la source et le puits) ; l'agent, lâché près de la source, est en vert.
+
+- `etape-2t-tache-0.png` : l'agent vient d'être lâché, sur un seul nœud de la ligne.
+- `etape-2t-tache-15.png` : après 15 pas de `0,1`, la tache avance le long des tubes vifs.
+- `etape-2t-tache-40.png` : après 40 pas, elle s'étire sur la ligne, un peu étalée par la diffusion.
+- `etape-2t-tache-80.png` : après 80 pas, elle arrive au puits, au bout de la ligne.
