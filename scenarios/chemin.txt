@@ -1,0 +1,7 @@
+# Le blob cherche le plus court chemin : une source et un puits aux deux bouts d'une diagonale.
+# Six cents pas : les tubes de la diagonale s'épaississent, tous les autres s'amincissent.
+grille 16 16
+voisinage 8
+source 1 1 0
+puits 14 14 0
+pas 600 0.5
