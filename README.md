@@ -5,11 +5,15 @@ d'un réseau de tubes, qui trouve le plus court chemin d'un labyrinthe, se souvi
 franchir un pont qu'il évitait, et transmet ce qu'il a appris en fusionnant avec un autre. Chaque mécanisme est refait
 en nombres d'après son article, avec un rendu qu'on prend plaisir à regarder : le réseau qui se resserre sur le chemin.
 
-**Où il en est** : l'étape 0, le socle, est faite : le réseau (un graphe sur un ou plusieurs étages), le calcul
-exact du flux dans les tubes, l'empreinte de l'état, l'aperçu. Aucun blob ne pousse encore : c'est l'étape 1. La V0, six
-étapes du socle à la page web, est décrite dans [FEUILLE-DE-ROUTE.md](FEUILLE-DE-ROUTE.md) ; ce que chaque étape
-établit, et ce qu'elle n'établit pas, est dans [MODELE.md](MODELE.md). Les trois premières étapes de modèle refont
-des expériences publiées ; la quatrième (la transmission par fusion) est un modèle à nous, présenté comme tel.
+**Où il en est** : l'étape 0, le socle, est faite, et le cœur de l'étape 1 aussi : un blob pousse entre une source
+et un puits. Ses tubes s'épaississent là où le flux passe et s'amincissent ailleurs, et le réseau se resserre sur le
+plus court chemin, y compris à travers des étages : c'est le théorème de Bonifaci, Mehlhorn et Varma, constaté ici sur
+des graphes tirés au hasard. Pour le voir : `cargo run -- lancer scenarios/chemin.txt --graine 1 --sortie sortie`,
+puis `sortie/apercu.png` ; ou les trois images `apercus/etape-1-chemin-*.png`. Restent, dans l'étape 1, le labyrinthe
+de Nakagaki et les réseaux entre plusieurs sources de nourriture. La V0, six étapes du socle à la page web, est
+décrite dans [FEUILLE-DE-ROUTE.md](FEUILLE-DE-ROUTE.md) ; ce que chaque étape établit, et ce qu'elle n'établit pas,
+est dans [MODELE.md](MODELE.md). Les trois premières étapes de modèle refont des expériences publiées ; la quatrième
+(la transmission par fusion) est un modèle à nous, présenté comme tel.
 
 ## Ce qui le tient
 
