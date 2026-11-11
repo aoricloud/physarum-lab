@@ -1,0 +1,61 @@
+# Le labyrinthe de Nakagaki, Yamada et Toth (2000), sur une grille : notre lecture, pas le dessin de l'article.
+# Deux anneaux en serie : de S (2, 14) a J (20, 14) par alpha1 (82 cellules) ou alpha2 (66), de J a T (38, 14) par
+# beta1 (88) ou beta2 (90). Deux cellules par millimetre : 41, 33, 44 et 45 mm. Couloirs d'une cellule, voisinage 4,
+# trois impasses. Les murs sont les cellules qui ne sont pas des couloirs (52 rectangles).
+grille 41 29
+voisinage 4
+source 2 14 0
+puits 38 14 0
+pas 500 0.5
+mur 0 0 40 0 0
+mur 0 1 36 2 0
+mur 38 1 40 3 0
+mur 0 3 1 24 0
+mur 3 3 36 3 0
+mur 3 4 19 7 0
+mur 23 4 23 10 0
+mur 27 4 27 10 0
+mur 31 4 31 9 0
+mur 35 4 35 9 0
+mur 39 4 40 14 0
+mur 21 5 21 11 0
+mur 25 5 25 11 0
+mur 29 5 29 10 0
+mur 33 5 33 10 0
+mur 37 5 37 10 0
+mur 3 8 3 13 0
+mur 7 8 7 13 0
+mur 11 8 11 13 0
+mur 15 8 15 13 0
+mur 19 8 19 13 0
+mur 5 9 5 14 0
+mur 9 9 9 14 0
+mur 13 9 13 14 0
+mur 17 9 17 14 0
+mur 29 11 37 11 0
+mur 21 12 37 13 0
+mur 23 14 23 22 0
+mur 27 14 27 22 0
+mur 31 14 31 22 0
+mur 35 14 35 21 0
+mur 3 15 19 17 0
+mur 21 15 21 23 0
+mur 25 15 25 23 0
+mur 29 15 29 23 0
+mur 33 15 33 22 0
+mur 37 15 40 22 0
+mur 3 18 3 23 0
+mur 7 18 7 23 0
+mur 11 18 19 18 0
+mur 5 19 5 24 0
+mur 9 19 9 24 0
+mur 11 19 11 23 0
+mur 15 19 15 23 0
+mur 19 19 19 23 0
+mur 13 20 13 24 0
+mur 17 20 17 24 0
+mur 33 23 40 23 0
+mur 21 24 40 24 0
+mur 0 25 10 27 0
+mur 12 25 40 27 0
+mur 0 28 40 28 0
