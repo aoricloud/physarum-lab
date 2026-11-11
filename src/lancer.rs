@@ -224,6 +224,106 @@
 //! reference, echelle)`, avec `reference = loi.valeur(debit)` (ce qu'un tube qui porte tout le débit tend à valoir) et
 //! la même règle d'échelle que plus haut.
 //!
+//! # Ce que fait l'étape 2, partie 2M : l'agent et les stimuli
+//!
+//! Un scénario de tubes (`source`, `puits`, `pas`) ou de réseau (`nourriture`, `debit`, `loi`, `pas`) peut porter, en
+//! plus, les directives de la **mémoire** (voir `crate::souvenir`, « La mémoire dans la forme »). Un scénario qui a au
+//! moins une directive `agent` ou `stimulus` est un scénario **avec agent** ; il lui faut alors **toutes** les
+//! directives de sa famille, **une** `agent` et, au choix, zéro à seize `stimulus` (sans stimulus, l'agent reste à zéro
+//! : c'est le témoin) :
+//!
+//! ```text
+//! agent <alpha> <c0> <kappa> <k>                      le couplage (α, c_0) et le transport de l'agent (κ, k)
+//! stimulus <x> <y> <etage> <debit> <debut> <fin>      un apport de <debit> d'agent au nœud (x, y, etage)
+//! ```
+//!
+//! `agent` a quatre flottants décimaux (`Directive::flottant`) dans ces bornes, **bornes comprises** : `alpha` dans `[0
+//! ; 100]`, `c0` dans `[0,001 ; 1000]`, `kappa` dans `[0 ; 10]`, `k` dans `[0 ; 10]` (`-0` est lu `-0.0`, accepté, et
+//! son signe compte dans l'empreinte). `stimulus` a six arguments : `x`, `y` et `etage` désignent un nœud de la grille
+//! (comme `source` : `x < largeur`, `y < hauteur`, `etage < etages`), `debit` est un flottant décimal avec `0 < debit
+//! <= 100`, `debut` et `fin` sont des entiers avec `debut < fin <= 100000` : le stimulus apporte `debit` d'agent à ce
+//! nœud à chaque pas numéro `t` tel que `debut <= t < fin` (le pas numéro `t` est le `t`-ième, à partir de 0 ; un
+//! stimulus peut finir après le dernier pas). Deux stimuli peuvent viser le même nœud : leurs apports s'ajoutent, dans
+//! l'ordre du fichier.
+//!
+//! **Les erreurs** sont toujours `ErreurLancer::DirectiveInconnue(ligne)`, rendues avant tout calcul. Sont
+//! **fautives**, en plus de ce qui est dit plus haut : un `agent` ou un `stimulus` au mauvais nombre d'arguments, mal
+//! écrit ou hors bornes (un nœud hors de la grille, `debut >= fin`, `fin > 100000`, un `debit` nul ou négatif) ; un
+//! second `agent` ; un dix-septième `stimulus`. La ligne rendue suit l'ordre de priorité des tubes et des réseaux,
+//! **avec trois ajouts** :
+//! 1. la première directive fautive dans l'ordre du fichier compte aussi les `agent` et `stimulus` ;
+//! 2. quand tout le reste est bon mais qu'il y a au moins un `stimulus` **sans** `agent` : la ligne de la **première
+//!    directive restante** du fichier (la première de `scenario.directives`), comme pour une directive manquante (ce
+//!    point vient après ceux des tubes et des réseaux : un scénario à qui il manque `pas` rend la même ligne, la
+//!    première) ;
+//! 3. après toutes les erreurs de `labyrinthe::construire` (et, pour un réseau, des autres nourritures) : le premier
+//!    `stimulus` du fichier dont le nœud n'est pas dans le plan (muré, ou séparé du puits ou de la 2e nourriture par
+//!    les murs) rend sa propre ligne.
+//!
+//! **La simulation avec agent.** Soit `graphe` le graphe du plan (comme plus haut). Avec `alea = Alea::new(graine)`,
+//! `memoire = Memoire::au_hasard(&graphe, &mut alea)` (les conductivités de départ sont celles de `Tubes::au_hasard`,
+//! l'agent est à zéro) ; les stimuli sont placés sur les nœuds du plan. Puis, pour `t = 0, 1, …, nombre - 1`, avec
+//! `apports` la liste `(nœud du plan, debit)` des stimuli tels que `debut <= t < fin`, dans l'ordre du fichier (vide
+//! s'il n'y en a pas) :
+//! - **tubes** : `memoire.avancer(&graphe, source, puits, 1.0, Loi::Lineaire, &Couplage { force: alpha, saturation: c0
+//!   }, &Transport { diffusion: kappa, perte: k }, &apports, h)` : le débit vaut 1, la loi est la linéaire (une famille
+//!   de tubes n'a pas de `loi` : ni `debit` ni `loi` ne sont permis avec `source` et `puits`) ;
+//! - **réseau** : d'abord le tirage `(i, j) = reseaux::tirer_paire(&mut alea, k)` (le même `alea` que celui des
+//!   conductivités de départ, après elles), puis `memoire.avancer(&graphe, nourriture_i, nourriture_j, debit, loi, …)`
+//!   avec la même paire `(Couplage, Transport)`.
+//!
+//! Une erreur d'`avancer` au pas numéro `t` rend `ErreurLancer::Calcul(t)`, sans aucune sortie (comme plus haut). Avec
+//! `pas 0 <h>`, aucun pas n'est fait. **Sans agent, un scénario est simulé exactement comme avant** (mêmes empreintes,
+//! mêmes mesures, même aperçu).
+//!
+//! **L'écriture canonique de l'état avec agent.** L'empreinte est le SHA-256 de cette suite d'octets (tous les entiers
+//! en petit-boutiste), après les `nombre` pas ; `a` est le nombre de nœuds d'alimentation (2 pour des tubes : la
+//! source, puis le puits ; `k_n` nourritures pour un réseau), `s` le nombre de stimuli, `m` le nombre d'arêtes et `n`
+//! le nombre de nœuds du plan :
+//!
+//! ```text
+//! 8 octets          l'étiquette ASCII "PHYSAR03"  (50 48 59 53 41 52 30 33)
+//! ...               graphe.octets()  (le graphe du plan)
+//! 1 octet           la famille : 0 pour des tubes (source et puits), 1 pour un réseau (nourritures)
+//! 4 octets          a, en u32
+//! 4 octets × a      les nœuds d'alimentation dans le plan, en u32 (tubes : source, puits ; réseau : par rang)
+//! 8 octets          le débit, to_bits(), en u64 (1.0 pour des tubes)
+//! 1 octet           la loi : 0 pour lineaire, 1 pour sigmoide (0 pour des tubes)
+//! 4 octets          nombre, en u32
+//! 8 octets          h.to_bits(), en u64
+//! 8 octets × 4      alpha, c0, kappa, k : to_bits() de chacun, en u64, dans cet ordre
+//! 4 octets          s, en u32
+//! 20 octets × s     par stimulus, dans l'ordre du fichier : nœud du plan (u32), debit.to_bits() (u64), debut (u32),
+//!                   fin (u32)
+//! 8 octets × m      la conductivité finale de chaque arête dans l'ordre des indices : to_bits(), en u64
+//! 8 octets × n      la concentration finale de chaque nœud dans l'ordre des indices : to_bits(), en u64
+//! 16 octets         alea.octets(), l'état du générateur APRÈS tous les tirages (départ et, pour un réseau, les paires)
+//! ```
+//!
+//! soit `L + 8 + 1 + 4 + 4 a + 8 + 1 + 4 + 8 + 32 + 4 + 20 s + 8 m + 8 n + 16` octets, `L` étant la longueur de
+//! l'écriture du graphe. Les états des étapes précédentes (`PHYSAR00` à `PHYSAR02`) ne changent pas, leurs empreintes
+//! non plus.
+//!
+//! **Les mesures avec agent.** Un en-tête, puis **une ligne par pas** (`nombre` lignes, aucune si `nombre` vaut 0),
+//! comme pour les tubes ou le réseau, avec **une colonne de plus à la fin**, `masse` :
+//!
+//! ```text
+//! temps,pression,vifs,longueur,masse\n                      tubes
+//! <t>,<pression>,<vifs>,<longueur>,<masse>\n
+//! temps,source,puits,pression,vifs,longueur,masse\n         réseau
+//! <t>,<i>,<j>,<pression>,<vifs>,<longueur>,<masse>\n
+//! ```
+//!
+//! Les colonnes d'avant se lisent comme plus haut (la ligne `t` décrit les conductivités **juste avant** le pas `t` ;
+//! seuil des tubes vifs `0.5` pour des tubes, `reseaux::SEUIL_VIF` pour un réseau ; `<pression>` est celle de la source
+//! dans l'`Etat` du pas, par `{:.9}`). `<masse>` est `memoire.agent().masse()` **juste avant** le pas `t`, par `{:.9}`.
+//!
+//! **L'aperçu avec agent.** Le PNG de `souvenir::apercu(&graphe, conductivités_finales, concentrations_finales,
+//! reference_tubes, reference_agent, echelle)` : `reference_tubes` est `1.0` pour des tubes et `loi.valeur(debit)` pour
+//! un réseau (comme plus haut), `reference_agent` la plus grande concentration finale (comparaisons `>` à partir de
+//! `0.0`) si elle est `> 0.0`, sinon `1.0` ; `echelle` la même règle que plus haut. C'est la tache d'agent sur les
+//! tubes.
+//!
 //! # Le binaire `physarum`
 //!
 //! `physarum lancer <scénario> --graine <n> --sortie <dossier>` (voir `src/main.rs`) lit le fichier de scénario,
