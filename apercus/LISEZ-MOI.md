@@ -18,3 +18,9 @@ Un aperçu est pour l'œil, jamais une preuve : la preuve, c'est l'empreinte et 
 - `etape-1l-etages.png` : avec un étage rapide, le réseau monte par deux puits.
 - `etape-1l-etages-cher.png` : avec des puits trop chers, il reste en bas.
 - `etape-1l-etages-pont.png` : avec un mur qui coupe l'étage du bas, il passe par le haut.
+
+## Étape 1 (les réseaux)
+
+- `etape-1r-reseau-debit-1.png` : à débit 1, le blob relie ses six nourritures par presque l'arbre le plus court.
+- `etape-1r-reseau-debit-3.png` : à débit 3, il garde quelques routes de secours.
+- `etape-1r-reseau-debit-8.png` : à débit 8, un réseau épais, plein de boucles.

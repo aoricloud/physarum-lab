@@ -236,6 +236,7 @@ use crate::image::ecrire_png;
 use crate::labyrinthe::{CoutEtage, ErreurLabyrinthe, FACTEUR_MAX, FACTEUR_MIN, Mur, construire};
 use crate::mesures::tubes_vifs;
 use crate::rendu::{apercu_graphe, treillis};
+use crate::reseaux::{Loi, Reseau, SEUIL_VIF, apercu as apercu_reseau};
 use crate::scenario::{Directive, Scenario};
 use crate::tubes::{Tubes, apercu as apercu_tubes};
 
@@ -276,9 +277,15 @@ pub fn lancer(scenario: &Scenario, graine: u64) -> Result<Sortie, ErreurLancer> 
         return Ok(lancer_grille_seule(scenario, graine));
     }
 
-    // Les trois directives des tubes, toutes les trois ou aucune, vérifiées avant tout calcul.
-    let demande = lire_directives(&scenario.directives, &scenario.grille)?;
+    // Les directives des tubes ou celles d'un réseau, vérifiées avant tout calcul.
+    match lire_directives(&scenario.directives, &scenario.grille)? {
+        Demande::Tubes(demande) => lancer_tubes(scenario, &demande, graine),
+        Demande::Reseau(demande) => lancer_reseau(scenario, &demande, graine),
+    }
+}
 
+/// Un scénario de tubes : la simulation, puis l'état `PHYSAR01`, les mesures et l'aperçu.
+fn lancer_tubes(scenario: &Scenario, demande: &TubesDemandes, graine: u64) -> Result<Sortie, ErreurLancer> {
     // Le graphe du plan : les murs retirés, la composante du puits gardée, les coûts d'étage appliqués.
     let plan = construire(&scenario.grille, &demande.murs, &demande.couts, demande.source, demande.puits).map_err(
         |erreur| match erreur {
@@ -319,6 +326,72 @@ pub fn lancer(scenario: &Scenario, graine: u64) -> Result<Sortie, ErreurLancer> 
     let (tl, _th) = treillis(&graphe);
     let echelle = (512 / tl).clamp(1, 8);
     let image = apercu_tubes(&graphe, tubes.conductivites(), 1.0, echelle);
+    let apercu = ecrire_png(image.largeur, image.hauteur, &image.rvb);
+
+    Ok(Sortie { empreinte, mesures, apercu })
+}
+
+/// Un scénario de réseau : la simulation, puis l'état `PHYSAR02`, les mesures et l'aperçu.
+fn lancer_reseau(scenario: &Scenario, demande: &ReseauDemande, graine: u64) -> Result<Sortie, ErreurLancer> {
+    // Le graphe du plan, construit entre la 1re et la 2e nourriture.
+    let (premiere, deuxieme) = (demande.nourritures[0], demande.nourritures[1]);
+    let plan =
+        construire(&scenario.grille, &demande.murs, &demande.couts, premiere.1, deuxieme.1).map_err(|erreur| {
+            match erreur {
+                ErreurLabyrinthe::PuitsMure => ErreurLancer::DirectiveInconnue(deuxieme.0),
+                _ => ErreurLancer::DirectiveInconnue(premiere.0),
+            }
+        })?;
+    // Les autres nourritures : la première qui n'est pas un nœud du plan rend sa propre ligne.
+    let mut du_plan: Vec<usize> = Vec::with_capacity(demande.nourritures.len());
+    for &(ligne, indice) in &demande.nourritures {
+        match plan.noeuds[indice] {
+            Some(noeud) => du_plan.push(noeud),
+            None => return Err(ErreurLancer::DirectiveInconnue(ligne)),
+        }
+    }
+    let graphe = plan.graphe;
+
+    // La simulation : le générateur tout juste amorcé, les conductivités de départ, puis `nombre` pas.
+    let mut alea = Alea::new(graine);
+    let mut reseau = Reseau::au_hasard(&graphe, &mut alea, du_plan.clone(), demande.debit, demande.loi)
+        .expect("les nourritures et le débit d'un plan vérifié sont valides");
+    let mut mesures = String::from("temps,source,puits,pression,vifs,longueur\n");
+    for t in 0..demande.nombre {
+        // La ligne `t` décrit les conductivités juste avant le pas `t`.
+        let (vifs, longueur) = tubes_vifs(&graphe, reseau.conductivites(), SEUIL_VIF);
+        let pas = reseau.avancer(&graphe, &mut alea, demande.h).map_err(|_| ErreurLancer::Calcul(t))?;
+        let rang = |noeud: usize| du_plan.iter().position(|&n| n == noeud).expect("une nourriture tirée");
+        let (i, j) = (rang(pas.source), rang(pas.puits));
+        let pression = pas.etat.pressions[pas.source];
+        mesures.push_str(&format!("{t},{i},{j},{pression:.9},{vifs},{longueur:.6}\n"));
+    }
+
+    // L'écriture canonique de l'état d'un réseau, après les `nombre` pas.
+    let mut octets = Vec::new();
+    octets.extend_from_slice(b"PHYSAR02");
+    octets.extend_from_slice(&graphe.octets());
+    octets.extend_from_slice(&(du_plan.len() as u32).to_le_bytes());
+    for &noeud in &du_plan {
+        octets.extend_from_slice(&(noeud as u32).to_le_bytes());
+    }
+    octets.extend_from_slice(&demande.debit.to_bits().to_le_bytes());
+    octets.push(match demande.loi {
+        Loi::Lineaire => 0,
+        Loi::Sigmoide => 1,
+    });
+    octets.extend_from_slice(&demande.nombre.to_le_bytes());
+    octets.extend_from_slice(&demande.h.to_bits().to_le_bytes());
+    for &conductivite in reseau.conductivites() {
+        octets.extend_from_slice(&conductivite.to_bits().to_le_bytes());
+    }
+    octets.extend_from_slice(&alea.octets());
+    let empreinte = sha256_hex(&octets);
+
+    // L'aperçu : la référence `f(I0)`, l'échelle `512 / TL` ramenée entre 1 et 8.
+    let (tl, _th) = treillis(&graphe);
+    let echelle = (512 / tl).clamp(1, 8);
+    let image = apercu_reseau(&graphe, reseau.conductivites(), &du_plan, demande.loi.valeur(demande.debit), echelle);
     let apercu = ecrire_png(image.largeur, image.hauteur, &image.rvb);
 
     Ok(Sortie { empreinte, mesures, apercu })
@@ -367,19 +440,114 @@ struct TubesDemandes {
     couts: Vec<CoutEtage>,
 }
 
-/// Vérifie les directives des tubes et rend leurs valeurs (voir « Les erreurs » dans la documentation du module).
+/// Les valeurs des directives d'un réseau, une fois vérifiées.
+struct ReseauDemande {
+    /// Les nourritures par rang : la ligne de la directive et l'indice du nœud dans la grille.
+    nourritures: Vec<(usize, usize)>,
+    debit: f64,
+    loi: Loi,
+    nombre: u32,
+    h: f64,
+    /// Les murs et les coûts d'étage, dans l'ordre du fichier.
+    murs: Vec<Mur>,
+    couts: Vec<CoutEtage>,
+}
+
+/// Ce que demande un scénario simulé : des tubes, ou un réseau.
+enum Demande {
+    Tubes(TubesDemandes),
+    Reseau(ReseauDemande),
+}
+
+/// Le nombre de nourritures permis.
+const NOURRITURES_MAX: usize = 16;
+
+/// Le débit d'un réseau : un flottant décimal dans `[0.05 ; 20]`, bornes comprises, ou `None`.
+fn debit(directive: &Directive) -> Option<f64> {
+    if directive.args.len() != 1 {
+        return None;
+    }
+    let valeur = directive.flottant(0).ok()?;
+    if !(0.05..=20.0).contains(&valeur) {
+        return None;
+    }
+    Some(valeur)
+}
+
+/// La loi d'un réseau : `lineaire` ou `sigmoide`, rien d'autre, ou `None`.
+fn loi(directive: &Directive) -> Option<Loi> {
+    if directive.args.len() != 1 {
+        return None;
+    }
+    match directive.args[0].as_str() {
+        "lineaire" => Some(Loi::Lineaire),
+        "sigmoide" => Some(Loi::Sigmoide),
+        _ => None,
+    }
+}
+
+/// Vérifie les directives des tubes ou des réseaux et rend leurs valeurs (voir « Les erreurs » et « Les erreurs des
+/// réseaux » dans la documentation du module).
 ///
-/// La ligne rendue suit cet ordre : la première directive fautive dans l'ordre du fichier ; sinon la seconde de
-/// `source` et `puits` quand elles désignent le même nœud ; sinon la première directive restante quand il en manque une.
-fn lire_directives(directives: &[Directive], grille: &Grille) -> Result<TubesDemandes, ErreurLancer> {
+/// La ligne rendue suit cet ordre : la première directive fautive dans l'ordre du fichier ; pour un réseau, la première
+/// `source` ou `puits` s'il y en a, puis la première directive restante quand il manque une directive ; pour des tubes,
+/// la seconde de `source` et `puits` quand elles désignent le même nœud, puis la première directive restante quand il
+/// en manque une.
+fn lire_directives(directives: &[Directive], grille: &Grille) -> Result<Demande, ErreurLancer> {
     let mut source: Option<(usize, usize)> = None; // (ligne, indice du nœud)
     let mut puits: Option<(usize, usize)> = None;
     let mut pas: Option<(u32, f64)> = None;
     let mut murs: Vec<Mur> = Vec::new();
     let mut couts: Vec<CoutEtage> = Vec::new();
+    let mut nourritures: Vec<(usize, usize)> = Vec::new(); // (ligne, indice du nœud)
+    let mut debit_lu: Option<f64> = None;
+    let mut loi_lue: Option<Loi> = None;
+    let mut reseau = false;
+    let mut premiere_source_ou_puits: Option<usize> = None;
     let mut fautive: Option<usize> = None;
     for directive in directives {
+        if matches!(directive.nom.as_str(), "source" | "puits") && premiere_source_ou_puits.is_none() {
+            premiere_source_ou_puits = Some(directive.ligne);
+        }
+        if matches!(directive.nom.as_str(), "nourriture" | "debit" | "loi") {
+            reseau = true;
+        }
         let faute = match directive.nom.as_str() {
+            "nourriture" => match noeud(directive, grille) {
+                Some(indice)
+                    if nourritures.len() < NOURRITURES_MAX && !nourritures.iter().any(|&(_, n)| n == indice) =>
+                {
+                    nourritures.push((directive.ligne, indice));
+                    None
+                }
+                _ => Some(directive.ligne),
+            },
+            "debit" => {
+                if debit_lu.is_some() {
+                    Some(directive.ligne)
+                } else {
+                    match debit(directive) {
+                        Some(valeur) => {
+                            debit_lu = Some(valeur);
+                            None
+                        }
+                        None => Some(directive.ligne),
+                    }
+                }
+            }
+            "loi" => {
+                if loi_lue.is_some() {
+                    Some(directive.ligne)
+                } else {
+                    match loi(directive) {
+                        Some(valeur) => {
+                            loi_lue = Some(valeur);
+                            None
+                        }
+                        None => Some(directive.ligne),
+                    }
+                }
+            }
             "source" => {
                 if source.is_some() {
                     Some(directive.ligne)
@@ -443,6 +611,19 @@ fn lire_directives(directives: &[Directive], grille: &Grille) -> Result<TubesDem
         return Err(ErreurLancer::DirectiveInconnue(ligne));
     }
 
+    if reseau {
+        // Un réseau avec une `source` ou un `puits` : la ligne de la première des deux dans le fichier.
+        if let Some(ligne) = premiere_source_ou_puits {
+            return Err(ErreurLancer::DirectiveInconnue(ligne));
+        }
+        // Il manque `debit`, `loi`, `pas` ou des nourritures : la ligne de la première directive restante.
+        let (Some(debit), Some(loi), Some((nombre, h)), true) = (debit_lu, loi_lue, pas, nourritures.len() >= 2) else {
+            let premiere = directives.first().expect("la liste des directives n'est pas vide");
+            return Err(ErreurLancer::DirectiveInconnue(premiere.ligne));
+        };
+        return Ok(Demande::Reseau(ReseauDemande { nourritures, debit, loi, nombre, h, murs, couts }));
+    }
+
     // Deux nœuds différents : la ligne de celle des deux directives qui vient en second.
     if let (Some((ligne_source, indice_source)), Some((ligne_puits, indice_puits))) = (source, puits)
         && indice_source == indice_puits
@@ -456,7 +637,7 @@ fn lire_directives(directives: &[Directive], grille: &Grille) -> Result<TubesDem
         return Err(ErreurLancer::DirectiveInconnue(premiere.ligne));
     };
 
-    Ok(TubesDemandes { source, ligne_source, puits, ligne_puits, nombre, h, murs, couts })
+    Ok(Demande::Tubes(TubesDemandes { source, ligne_source, puits, ligne_puits, nombre, h, murs, couts }))
 }
 
 /// Le nœud d'une directive `source` ou `puits`, ou `None` si elle est fautive (arguments, forme ou bornes).
