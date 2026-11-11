@@ -2,8 +2,8 @@
 //!
 //! Un stimulus (de la nourriture, du sel) libère dans le blob un agent soluble ; le liquide qui circule dans les tubes
 //! le porte. Ce module pose **seulement ce transport** : où va l'agent, pas ce qu'il fait aux tubes. L'effet de l'agent
-//! sur les tubes (la mémoire) est la partie 2M, plus tard ; elle lira les concentrations à chaque pas
-//! ([`Agent::concentrations`]) et les fera agir sur la mise à jour des tubes. Ce que les tests d'acceptation prouvent
+//! sur les tubes (la mémoire) est la partie 2M, plus bas ; elle lit les concentrations à chaque pas
+//! ([`Agent::concentrations`]) et les fait agir sur la mise à jour des tubes. Ce que les tests d'acceptation prouvent
 //! est dans `references/etape-2t-valeurs.md` (identifiants `V-AGT-xx`, `V-REC-xx`, `V-MAS-xx`, `V-STA-xx`, `V-BIT-xx`,
 //! `V-TAC-xx`, `V-ERR-xx`, `V-APE-xx`).
 //!
@@ -205,10 +205,134 @@
 //! où `c` est la couleur que le point a **à ce moment-là** (un niveau 0 laisse le point tel qu'il est ; deux nœuds au
 //! même point : le second mélange sur le résultat du premier). Chaque point devient enfin un carré de `echelle ×
 //! echelle` pixels, comme dans `rendu`. [`AGENT`] est la couleur d'un nœud de niveau 255.
-
+//!
+//! # La mémoire dans la forme (étape 2, partie 2M)
+//!
+//! Jusqu'ici l'agent est porté par les flux sans rien leur faire. Cette partie ferme la boucle : **l'agent change la
+//! croissance des tubes**, et les tubes changent où va l'agent ([`Memoire`], [`Couplage`], [`PasMemoire`]).
+//!
+//! **Ce qui vient de Kramar et Alim** (PNAS 118(10), 2021) : le mécanisme (un agent soluble, libéré au stimulus et
+//! porté par le flux, **assouplit** la paroi des tubes, qui se dilatent), et la **forme de la saturation** de l'effet :
+//! leur éq. (2) écrit le module de la paroi `E = E_0 - ΔE · c / (c_0 + c)` (de type Michaelis ; lue sur le texte
+//! extrait du PDF, symboles grecs perdus et rétablis par le sens). **Ce qui est à nous** : tout le reste. Leur modèle
+//! est **un seul tube** élastique (il n'a ni graphe ni loi `dD/dt = f(|Q|) - D` ; le supplément, Fig. S8 « deux stimuli
+//! », n'a pas pu être lu), et **aucune source ne donne le couplage « agent vers croissance des tubes » sur un graphe,
+//! ni la tenue de l'empreinte, ni l'effet de deux stimuli**. Ce que fait cette partie est **notre modèle**, dit comme
+//! tel, et **son résultat est mesuré et rapporté tel quel, négatif compris** (voir « Ce que les mesures ont donné »).
+//!
+//! ## La loi couplée (à nous)
+//!
+//! Là où l'agent est présent, la **cible** vers laquelle s'adapte la conductivité d'un tube grandit : la loi du pas des
+//! tubes (`D <- D + h (f(|Q|) - D)`) devient
+//!
+//! ```text
+//! D <- D + h * ((1 + α * σ(c_e)) * f(|Q|) - D)        puis le plancher,       σ(c) = c / (c_0 + c)
+//! ```
+//!
+//! où `f` est la loi du pas ([`Loi`] de `reseaux` : linéaire `|Q|` ou sigmoïde `Q²/(1+Q²)`), `c_e` la concentration de
+//! l'arête (**la moyenne des concentrations de ses deux bouts**, choix à nous), `σ` la saturation de l'article (`0 <= σ
+//! < 1`, la moitié de son maximum à `c = c_0`) et `α >= 0` la force de l'assouplissement. **Sans flux, aucun effet** :
+//! la cible est un multiple de `f(|Q|)`, donc un tube que le flux ne traverse pas s'amincit comme avant, agent ou pas.
+//! Avec `α = 0` le pas est, **bit pour bit**, celui sans agent (`Tubes::avancer` pour [`Loi::Lineaire`],
+//! `Reseau::avancer_paire` pour la sigmoïde) : `(1.0 + 0.0 * σ) * f` vaut exactement `f`.
+//!
+//! ## Le pas couplé, à la lettre
+//!
+//! [`Memoire::avancer`] fait, dans cet ordre (une opération `f64` par ligne, parenthèses d'abord, puis de gauche à
+//! droite ; `c` désigne les concentrations de l'agent **d'avant** le pas) :
+//!
+//! ```text
+//! g[e] = D[e] / cout[e]                                  pour chaque arête e, par indice croissant
+//! inj  = nb_noeuds fois +0.0, puis inj[source] = debit
+//! p    = solveur::pressions(graphe, g, inj, puits) ;  Q = solveur::flux(graphe, g, p)
+//! agent' = Agent::avancer(graphe, Q, transport, apports, h)         (le transport de 2T, sur une copie de l'agent)
+//! pour chaque arête e = (a, b), par indice croissant :
+//!     ce    = (c[a] + c[b]) * 0.5                                    (c : l'agent d'AVANT le transport)
+//!     sigma = ce / (c_0 + ce)
+//!     cible = (1.0 + alpha * sigma) * f(Q[e])        (f = Loi::valeur, sur Q[e] signé : c'est f(|Q|) des deux lois)
+//!     d     = D[e] + h * (cible - D[e])
+//!     D'[e] = d  si d >= PLANCHER,  sinon PLANCHER
+//! ```
+//!
+//! **Les conductivités se mettent à jour avec les concentrations d'AVANT le transport** (choix à nous) : l'état suivant
+//! est une fonction de l'état d'avant seul (`D, c`), les deux moitiés du pas (flux, puis `D'` et `c'`) partent du même
+//! état, et la mise à jour ne dépend pas du découpage en sous-pas du transport. Conséquence : un apport d'agent ne
+//! touche les tubes qu'**au pas suivant** (les tests le vérifient). Le pas rend les pressions et les flux (avec les
+//! conductivités d'avant) et le [`Bilan`] du transport ([`PasMemoire`]).
+//!
+//! ## Les vérifications du pas couplé, dans cet ordre
+//!
+//! 1. `Taille` : `graphe.nb_aretes()` n'est pas le nombre de conductivités, ou le nombre de concentrations n'est pas
+//!    `graphe.nb_noeuds()` ;
+//! 2. `Noeud` : `source` ou `puits` n'est pas un nœud, ou les deux sont le même ;
+//! 3. `Debit` : `debit` n'est pas un nombre fini `> 0.0` ;
+//! 4. `Pas` : `h` n'est pas un nombre fini avec `0.0 < h < 1.0` (celui des tubes ; le transport se découpe seul) ;
+//! 5. `Force` : `α` n'est pas un nombre fini `>= 0.0` ;
+//! 6. `Saturation` : `c_0` n'est pas un nombre fini `> 0.0` ;
+//! 7. `Solveur(erreur)` : l'erreur du solveur, s'il en rend une ;
+//! 8. `Agent(erreur)` : l'erreur du transport (`Diffusion`, `Perte`, `Apport(rang)`, `SousPas`, `Debordement`, dans
+//!    l'ordre de « Les vérifications » plus haut ; `Flux` ne se produit que si le solveur rend un flux infini) ;
+//! 9. `Debordement` : une `cible` ou une conductivité calculée `d` n'est pas un nombre fini, vérifiées arête par arête
+//!    dans l'ordre des indices, la `cible` puis `d`, **avant** le plancher (par exemple `α = 1e308` avec un agent
+//!    présent).
+//!
+//! **Sur une erreur, rien n'a changé** : ni les conductivités ni l'agent. [`Memoire::new`] fait `Taille` puis
+//! `Conductivite(e)`.
+//!
+//! ## Les deux familles de l'étape 1
+//!
+//! `avancer` prend la `source`, le `puits`, le `debit` et la [`Loi`] : **une source et un puits** (le cœur : débit 1,
+//! loi linéaire dans `lancer`) ou **les nourritures tirées par paire** (`reseaux` : `lancer` tire la paire avec
+//! `reseaux::tirer_paire`, puis appelle `avancer` avec elle). Une seule fonction sert les deux : aucune des deux
+//! familles n'a de code à elle dans le couplage.
+//!
+//! ## Ce qu'on mesure, et le seuil fixé d'avance
+//!
+//! Les tests (et `references/etape-2m-valeurs.md`) comparent toujours un état **avec stimulus** à un **témoin de même
+//! graine** sans stimulus (mêmes conductivités de départ, même paire tirée à chaque pas). Sur une grille de 15 colonnes
+//! et 11 lignes (voisinage 8), source en `(1, 5)`, puits en `(13, 5)` : la **moitié haute** est `y < 5`, la **basse**
+//! `y > 5` ; la moyenne `Dm` d'une moitié est la somme des conductivités des arêtes dont les **deux** bouts y sont (par
+//! indice croissant, à partir de `0.0`) divisée par leur nombre. **L'écart d'empreinte** est `E = (Dm_haut -
+//! Dm_bas)(stimulus) - (Dm_haut - Dm_bas)(témoin)`, avec `F_A` et `F_B` ses deux termes (haut, bas). **Le seuil de
+//! l'empreinte est `0.01` sur `E`, fixé avant la campagne de mesures.** La **sonde** pose un flux de 1 en `(7, 5)` avec
+//! le puits en `(13, 5)` sur les conductivités gelées (`solveur`) et partage le flux qui traverse la coupe entre les
+//! colonnes 10 et 11 selon que le bout en colonne 10 est en haut (`y < 5`), sur l'axe ou en bas : c'est « où part le
+//! flux d'une nouvelle source ». Notre modèle n'a **pas de front qui avance** (la « migration » du plan n'existe pas
+//! ici) : on ne mesure que ces parts.
+//!
+//! ## Ce que les mesures ont donné (50 graines, 101 à 150 ; détail dans `references/etape-2m-valeurs.md`)
+//!
+//! Réglage standard : loi sigmoïde, `I0 = 3`, `α = 8`, `c_0 = 1`, `κ = 0.1`, `k = 0.2`, `h = 0.1`, stimulus de débit 2
+//! en `(7, 2)` pendant les pas `[0 ; 100[`.
+//!
+//! - **Sous la loi sigmoïde, l'empreinte se forme et ne s'efface plus** : `E` vaut en moyenne `+0.089` à la fin du
+//!   stimulus (au pire `+0.059`), `+0.0366` cent pas plus tard et **exactement la même valeur 3000 pas après le
+//!   retrait** (le réseau est tombé sur un état stable : un tube que l'agent a fait passer au-dessus de son seuil de
+//!   survie y reste, c'est la bistabilité de la loi sigmoïde) ; 96 % des graines restent au-dessus du seuil, 4 % en
+//!   restent sous (la plus basse vaut `+0.0079`, encore positive). L'agent n'y est pour rien après coup : effacé au pas
+//!   100, le résultat est le même (`+0.0364`).
+//! - **Sous la loi linéaire, elle s'efface** : le réseau n'a qu'un équilibre (le plus court chemin) ; `E` retombe sous
+//!   le seuil entre 200 et 300 pas après le retrait, puis tend vers zéro (`+0.0001` à 1000 pas). Si l'agent s'en va
+//!   lentement (`k = 0.01`), l'empreinte le suit : elle tient aussi longtemps que lui.
+//! - **Un stimulus donné sur un réseau déjà convergé ne laisse rien après son retrait** (le flux ne passe plus près).
+//! - **Où part le flux d'une nouvelle source** : avec le stimulus en haut, la part du flux de la sonde passant par le
+//!   haut moins celle passant par le bas vaut `+0.72` en moyenne (jamais négative sur 50 graines, `+0.16` au pire),
+//!   contre `+0.01` (de `-0.33` à `+0.33`) pour le témoin et `-0.66` pour le stimulus symétrique.
+//! - **Deux stimuli** : du même côté ils ne s'ajoutent pas en intensité (`F_A` `+7 %` ou `-7 %` selon l'écartement)
+//!   mais rendent l'empreinte régulière (la sonde ne descend plus sous `+0.67`) ; de côtés opposés ils se partagent la
+//!   même « réserve » de tubes épais (`F_A` et `F_B` valent chacun environ la moitié de celui d'un stimulus seul) et la
+//!   sonde choisit un côté au hasard.
+//!
+//! **Ce qui ne tient pas** : sous la loi linéaire (le réseau du cœur), l'empreinte s'efface ; sur un réseau convergé,
+//! un stimulus n'en laisse pas ; l'empreinte ne se renforce pas avec le nombre de stimuli ; deux stimuli opposés ne se
+//! cumulent pas ; et **aucun de ces chiffres n'est celui d'un article**.
+use crate::alea::Alea;
 use crate::graphe::Graphe;
 use crate::rendu::{ECART, Image};
+use crate::reseaux::Loi;
+use crate::solveur::ErreurSolveur;
 use crate::tubes;
+use crate::tubes::Etat;
 
 /// Le nombre de sous-pas au-delà duquel [`Agent::avancer`] refuse : `1_000_000`.
 pub const MAX_SOUS_PAS: usize = 1_000_000;
@@ -720,4 +844,110 @@ fn melange(a: [u8; 3], b: [u8; 3], n: u8) -> [u8; 3] {
     let n = u32::from(n);
     let canal = |a: u8, b: u8| -> u8 { ((u32::from(a) * (255 - n) + u32::from(b) * n + 127) / 255) as u8 };
     [canal(a[0], b[0]), canal(a[1], b[1]), canal(a[2], b[2])]
+}
+
+// Partie 2M : la mémoire dans la forme (le couplage de l'agent aux tubes).
+// ----------------------------------------------------------------------------------------------------------------
+
+/// Les deux coefficients du couplage de l'agent aux tubes (voir « La mémoire dans la forme »).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Couplage {
+    /// La force `α >= 0.0` de l'assouplissement : `0.0` n'a aucun effet (le pas est celui des tubes sans agent).
+    pub force: f64,
+    /// La saturation `c_0 > 0.0` : la concentration d'agent à laquelle l'effet vaut la moitié de son maximum.
+    pub saturation: f64,
+}
+
+/// Pourquoi un pas couplé ou une mémoire n'a pas pu être construit ou calculé (voir « La mémoire dans la forme »).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ErreurMemoire {
+    /// Le nombre de conductivités n'est pas le nombre d'arêtes, ou le nombre de concentrations n'est pas le nombre de
+    /// nœuds.
+    Taille,
+    /// La conductivité de cette arête (le plus petit indice fautif) n'est pas un nombre fini `>= PLANCHER`.
+    Conductivite(usize),
+    /// `source` ou `puits` n'est pas un nœud du graphe, ou les deux sont le même nœud.
+    Noeud,
+    /// Le débit n'est pas un nombre fini `> 0.0`.
+    Debit,
+    /// Le pas `h` n'est pas un nombre fini avec `0.0 < h < 1.0`.
+    Pas,
+    /// La force `α` n'est pas un nombre fini `>= 0.0`.
+    Force,
+    /// La saturation `c_0` n'est pas un nombre fini `> 0.0`.
+    Saturation,
+    /// Le solveur de l'étape 0 a refusé ou échoué.
+    Solveur(ErreurSolveur),
+    /// Le transport de l'agent a refusé ou échoué (`Diffusion`, `Perte`, `Apport(rang)`, `SousPas`, `Debordement`).
+    Agent(ErreurAgent),
+    /// Une cible ou une conductivité calculée n'est pas un nombre fini.
+    Debordement,
+}
+
+/// Ce qu'un pas couplé a calculé : les pressions et les flux (avec les conductivités d'AVANT) et le bilan de l'agent.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PasMemoire {
+    /// Les pressions et les flux du pas, comme `Tubes::avancer`.
+    pub etat: Etat,
+    /// Le bilan du transport de l'agent pour ce pas (voir [`Agent::avancer`]).
+    pub bilan: Bilan,
+}
+
+/// Les tubes et l'agent d'un réseau, avancés ensemble (voir « La mémoire dans la forme »).
+#[derive(Clone, Debug, PartialEq)]
+#[allow(dead_code)]
+pub struct Memoire {
+    conductivites: Vec<f64>,
+    agent: Agent,
+}
+
+impl Memoire {
+    /// Une mémoire de conductivités et d'agent donnés.
+    ///
+    /// # Erreurs
+    ///
+    /// Dans cet ordre : `Taille` (`conductivites.len()` n'est pas `graphe.nb_aretes()`, ou l'agent n'a pas
+    /// `graphe.nb_noeuds()` concentrations) ; `Conductivite(e)` (le plus petit indice d'une conductivité qui n'est pas
+    /// un nombre fini `>= PLANCHER`).
+    #[allow(unused_variables)]
+    pub fn new(graphe: &Graphe, conductivites: Vec<f64>, agent: Agent) -> Result<Memoire, ErreurMemoire> {
+        todo!()
+    }
+
+    /// Une mémoire aux conductivités de départ de `Tubes::au_hasard(graphe, alea)` et à l'agent à zéro.
+    #[allow(unused_variables)]
+    pub fn au_hasard(graphe: &Graphe, alea: &mut Alea) -> Memoire {
+        todo!()
+    }
+
+    /// Les conductivités, dans l'ordre des indices d'arête.
+    pub fn conductivites(&self) -> &[f64] {
+        todo!()
+    }
+
+    /// L'agent.
+    pub fn agent(&self) -> &Agent {
+        todo!()
+    }
+
+    /// Un pas couplé (voir « Le pas couplé, à la lettre » et « Les vérifications du pas couplé »).
+    ///
+    /// # Erreurs
+    ///
+    /// Celles de « Les vérifications du pas couplé », dans leur ordre ; **sur une erreur, rien n'a changé**.
+    #[allow(unused_variables, clippy::too_many_arguments)]
+    pub fn avancer(
+        &mut self,
+        graphe: &Graphe,
+        source: usize,
+        puits: usize,
+        debit: f64,
+        loi: Loi,
+        couplage: &Couplage,
+        transport: &Transport,
+        apports: &[(usize, f64)],
+        h: f64,
+    ) -> Result<PasMemoire, ErreurMemoire> {
+        todo!()
+    }
 }
