@@ -1,0 +1,10 @@
+# Les puits entre deux etages : l'etage du haut est assez rapide, le reseau y monte.
+# Deux etages de 21 x 3 cases ; la source et le puits sont sur l'etage du bas, aux deux bouts de la ligne du milieu.
+# L'etage du haut coute deux fois moins cher (cout_etage 1 0.5) ; un lien vertical coute 1.0.
+# Le chemin du bas coute 20 ; celui qui monte et redescend coute 2 x 1.0 + 10 = 12 : le reseau monte.
+grille 21 3
+etages 2 1.0 1.0
+cout_etage 1 0.5
+source 0 1 0
+puits 20 1 0
+pas 300 0.5

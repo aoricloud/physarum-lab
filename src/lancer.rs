@@ -53,22 +53,48 @@
 //! `etage < etages`, et les deux nœuds doivent être **différents**. `nombre` va de 0 à 100000 (bornes comprises) et `h`
 //! vérifie `0 < h < 1`.
 //!
+//! **Les murs et les étages (étape 1, partie 1L).** Deux directives de plus, facultatives, en autant d'exemplaires
+//! qu'on veut pour la première et au plus un par étage pour la seconde (elles ne servent qu'avec les trois directives
+//! des tubes ; voir `crate::labyrinthe`) :
+//!
+//! ```text
+//! mur <x0> <y0> <x1> <y1> <etage>     un rectangle de cellules murées, bornes comprises
+//! cout_etage <etage> <facteur>        le coût des arêtes de cet étage est multiplié par <facteur>
+//! ```
+//!
+//! Tous les arguments de `mur` sont des entiers (comme ci-dessus) avec `x0 <= x1 < largeur`, `y0 <= y1 < hauteur` et
+//! `etage < etages` ; deux murs qui se recouvrent sont permis (l'union des cellules). Pour `cout_etage`, `etage <
+//! etages` et `<facteur>` est un flottant décimal (`Directive::flottant`) dans `[0,1 ; 10]`, **bornes comprises**
+//! (`0.1` et `10` passent, `0.09` et `10.01` non) ; un étage n'a qu'un `cout_etage`. `lancer` construit le graphe avec
+//! `labyrinthe::construire(grille, murs, couts, source, puits)`, les murs et les coûts **dans l'ordre du fichier** : la
+//! simulation, l'empreinte, les mesures et l'aperçu portent sur le **graphe du plan** (les cellules murées ou séparées
+//! du puits n'y sont plus). Dans l'écriture canonique, la source et le puits sont leurs indices **dans ce graphe** ;
+//! sans mur, ce sont ceux de la grille. Un scénario sans `mur` ni `cout_etage` est simulé exactement comme avant.
+//!
 //! **Les erreurs.** Celles des directives sont `ErreurLancer::DirectiveInconnue(ligne)`, rendue avant tout calcul
 //! (l'autre erreur, `Calcul`, est dite plus bas : « Un calcul qui s'arrête »). Une directive est
-//! **fautive** si son nom n'est ni `source`, ni `puits`, ni `pas` ; ou si elle n'a pas le bon nombre d'arguments ou un
-//! argument mal écrit ou hors bornes ; ou si c'est la **seconde** `source`, `puits` ou `pas` du fichier (même si ses
-//! arguments sont bons). La ligne rendue est, dans cet ordre de priorité :
+//! **fautive** si son nom n'est ni `source`, ni `puits`, ni `pas`, ni `mur`, ni `cout_etage` ; ou si elle n'a pas le
+//! bon nombre d'arguments ou un argument mal écrit ou hors bornes (y compris un `mur` ou un `cout_etage` hors de la
+//! grille, un `mur` dont `x0 > x1` ou `y0 > y1`, un facteur hors de `[0,1 ; 10]`) ; ou si c'est la **seconde**
+//! `source`, `puits` ou `pas` du fichier, ou le **second** `cout_etage` d'un même étage (même si ses arguments sont
+//! bons). La ligne rendue est, dans cet ordre de priorité :
 //! 1. la ligne de la **première directive fautive** dans l'ordre du fichier ;
 //! 2. sinon, si `source` et `puits` désignent le même nœud, la ligne de celle des deux qui vient **en second** dans le
 //!    fichier ;
-//! 3. sinon, s'il manque l'une des trois directives, la ligne de la **première directive restante** du fichier (celle
-//!    qui ouvre la liste de `scenario.directives`).
+//! 3. sinon, s'il manque l'une des trois directives des tubes, la ligne de la **première directive restante** du
+//!    fichier (celle qui ouvre la liste de `scenario.directives`) : un `mur` ou un `cout_etage` sans les trois
+//!    directives des tubes n'est pas ignoré, c'est cette erreur ;
+//! 4. sinon, les erreurs de `labyrinthe::construire` : le puits sous un mur (`PuitsMure`) rend la ligne de `puits` ; la
+//!    source sous un mur (`SourceMuree`) ou séparée du puits par les murs (`SourceCoupee`) rend la ligne de `source`.
+//!    Ses autres erreurs (`Grille`, `Mur`, `Facteur`, `Noeud`) ne peuvent pas venir d'un scénario lu : les points 1 et
+//!    2 les ont déjà rendues ; si l'une venait quand même, `lancer` rendrait la ligne de `source`.
 //!
 //! Sans aucune directive restante, c'est l'étape 0 (rien à simuler).
 //!
 //! **La simulation.** Avec `alea = Alea::new(graine)`, les tubes de départ sont `Tubes::au_hasard(&graphe, &mut alea)`
-//! (aucun autre tirage n'est fait ensuite). Puis `nombre` fois `tubes.avancer(&graphe, source, puits, 1.0, h)` : le
-//! débit vaut toujours 1. Le résultat de chaque pas est celui de la doc de `crate::tubes`, bit pour bit.
+//! (`graphe` est le graphe du plan ; aucun autre tirage n'est fait ensuite). Puis `nombre` fois `tubes.avancer(&graphe,
+//! source, puits, 1.0, h)` : le débit vaut toujours 1. Le résultat de chaque pas est celui de la doc de `crate::tubes`,
+//! bit pour bit.
 //!
 //! **Un calcul qui s'arrête.** Les pas sont numérotés à partir de 0 : le pas numéro `t` est celui qui donne la ligne
 //! `t` des mesures. Si `avancer` rend une erreur au pas numéro `t` (le solveur s'arrête sur un pivot nul quand les
@@ -82,9 +108,9 @@
 //!
 //! ```text
 //! 8 octets          l'étiquette ASCII "PHYSAR01"  (50 48 59 53 41 52 30 31)
-//! ...               graphe.octets()
-//! 4 octets          l'indice du nœud source, en u32
-//! 4 octets          l'indice du nœud puits, en u32
+//! ...               graphe.octets()  (le graphe du plan : murs et coûts d'étage compris)
+//! 4 octets          l'indice du nœud source (dans le graphe du plan), en u32
+//! 4 octets          l'indice du nœud puits (dans le graphe du plan), en u32
 //! 4 octets          nombre, en u32
 //! 8 octets          h.to_bits(), en u64
 //! 8 octets × m      la conductivité finale de chaque arête dans l'ordre des indices : to_bits(), en u64
@@ -92,8 +118,8 @@
 //! ```
 //!
 //! soit `8 + L + 12 + 8 + 8 m + 16 = L + 44 + 8 m` octets, `L` étant la longueur de l'écriture du graphe et `m` le
-//! nombre d'arêtes. Une graine ou un `h` ou un nombre de pas ou une source différents donnent des empreintes
-//! différentes.
+//! nombre d'arêtes. L'étiquette reste `PHYSAR01` : la forme ne change pas, le graphe y est écrit en entier. Une graine
+//! ou un `h` ou un nombre de pas ou une source différents donnent des empreintes différentes.
 //!
 //! **Les mesures avec tubes.** Un en-tête, puis **une ligne par pas** : `nombre` lignes, aucune si `nombre` vaut 0.
 //!
@@ -114,7 +140,10 @@
 //! l'aperçu).
 //!
 //! **L'aperçu avec tubes.** Le PNG de `tubes::apercu(&graphe, tubes.conductivites(), 1.0, echelle)` avec les
-//! conductivités finales, la référence `1.0` (le débit) et la même règle d'échelle que ci-dessus.
+//! conductivités finales, la référence `1.0` (le débit) et la même règle d'échelle que ci-dessus. Avec des murs,
+//! `graphe` est celui du plan et **le cadre du treillis se calcule sur ses nœuds** (`rendu::treillis(&graphe)`) : un
+//! mur y est un trou, et si les murs retirent toute la première ou la dernière colonne, la première ou la dernière
+//! ligne, ou tout un étage extrême, l'image rétrécit d'autant (le treillis de `rendu` lui-même ne change pas).
 //!
 //! # Le binaire `physarum`
 //!
