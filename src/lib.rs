@@ -9,6 +9,7 @@ pub mod fusion;
 pub mod graphe;
 pub mod habituation;
 pub mod image;
+pub mod labyrinthe;
 pub mod lancer;
 pub mod mesures;
 pub mod rendu;
