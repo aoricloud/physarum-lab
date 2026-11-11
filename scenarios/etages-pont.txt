@@ -1,0 +1,9 @@
+# Un mur sur toute la hauteur de l'etage du bas (colonne 7) coupe le passage : la seule route de la source au puits
+# passe par l'etage du haut, par deux liens verticaux (un puits a l'aller, un au retour).
+grille 15 5
+etages 2 1.0 1.0
+cout_etage 1 0.5
+mur 7 0 7 4 0
+source 2 2 0
+puits 12 2 0
+pas 300 0.5
