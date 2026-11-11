@@ -236,3 +236,95 @@ est aussi testé.
 - **La vitesse** : les nombres de pas sont ceux de ce dessin, de `h = 0,5` et de ces graines.
 - **Les grands labyrinthes** : 342 nœuds au plus ici ; rien sur la précision du solveur à 10 000 nœuds.
 - **Linux** : tout est joué sous Windows ; la CI rejouera l'empreinte de `references/labyrinthe-graine-1.empreinte`.
+
+## Étape 1 (partie 1R) : les réseaux entre plusieurs sources de nourriture
+
+Le blob y relie plusieurs sources de nourriture : à chaque pas, une paire tirée au hasard est la source et le puits d'un
+débit, et les tubes s'adaptent. Rien de neuf dans le solveur ni dans le pas d'Euler du cœur ; ce qui change est la loi
+de renforcement (la sigmoïde de Tero et al. 2010), le tirage de la paire, l'arbre couvrant minimal et les trois mesures.
+Les valeurs attendues des tests, chacune avec sa source, sont dans `references/etape-1r-valeurs.md`.
+
+### La loi, le pas et le tirage : `reseaux`
+
+- **Référence** : Tero, Takagi, Saigusa, Ito, Bebber, Fricker, Yumiki, Kobayashi et Nakagaki, « Rules for Biologically
+  Inspired Adaptive Network Design » (Science 327, 2010, p. 439-441 et supplément, lus) : à chaque pas, une source de
+  nourriture tirée au hasard fait circuler le flux `I0`, une seconde, tirée au hasard, est le puits ; `dD/dt = f(|Q|) -
+  D` avec `f(|Q|) = |Q|^γ / (1 + |Q|^γ)` ; une simulation « typique » prend `I0 = 2` et `γ = 1,8` (Fig. 4) ; la Fig. 3A
+  fait varier `I0` de 0,2 à 7,2 à `γ = 1,8`.
+- **`γ = 2`, pas `1,8`** : `powf` est interdit (les fonctions du système peuvent différer d'une machine à l'autre) ;
+  `Q^2` s'écrit `Q * Q`. La loi d'ici est `f(Q) = Q·Q / (1 + Q·Q)`, qui n'est **pas** celle de l'article. La loi
+  linéaire du cœur (`f(Q) = |Q|`) reste disponible (`Loi::Lineaire`) ; avec elle, un pas est, bit pour bit, celui de
+  `Tubes::avancer`.
+- **À nous, l'article ne les donne pas** : le maillage, le nombre de nœuds, le pas de temps, le schéma d'intégration
+  (nous gardons le pas d'Euler du cœur, `0 < h < 1`), les conductivités de départ (celles du cœur : `0,5 + 0,5 u`), et
+  **la façon de tirer la paire** (deux tirages toujours : `i = borne(k)`, `j = borne(k - 1)`, puis `j + 1` si `j >= i`).
+- Les conductivités vivent dans un `Reseau` à nous (pas dans un `Tubes` reconstruit à chaque pas : un `Reseau` garde ses
+  conductivités, ses nourritures, son débit et sa loi). Sur une erreur, rien ne change, générateur compris.
+
+### L'arbre couvrant minimal et les trois mesures
+
+- **Référence** : Tero et al. 2010 (p. 439-440, Fig. 3 et supplément, lus) : TL « longueur totale », MD « distance
+  minimale moyenne entre les paires de sources de nourriture », FT « la probabilité de déconnecter une partie du réseau
+  lors de la défaillance d'un seul lien », chacune normalisée par celle de l'arbre couvrant minimal. **Aucune formule
+  n'est publiée** : celles d'ici sont à nous.
+- **L'arbre** : celui de Kruskal sur la clôture métrique des nourritures (la distance de deux nourritures est la
+  longueur du plus court chemin du graphe, par les **longueurs**), les égalités au plus petit `(distance, i, j)` ;
+  `TL_MST` est la somme de ses distances, `MD_MST` la distance moyenne dans l'arbre sur les paires de nourritures.
+- **TL** : la longueur totale des tubes vifs. **MD** : la distance moyenne, sur les paires de nourritures, dans le
+  réseau des tubes vifs (`+inf` si une nourriture est coupée). **FT** : **notre lecture** de la probabilité de
+  l'article, en **un moins** cette probabilité (la note de lecture dit que c'est une déduction, d'après les valeurs du
+  supplément : 0,00 pour un réseau proche de l'arbre, 0,96 pour le réseau ferroviaire) : la part des tubes vifs dont la
+  panne seule ne coupe aucune nourriture d'une autre (une branche morte ne coupe rien). Les rapports sont `TL / TL_MST`
+  et `MD / MD_MST`.
+- **Un tube est vif** à partir de `0,001`, seuil absolu (`reseaux::SEUIL_VIF`). Sous la sigmoïde, un tube qui ne porte
+  plus de flux est tenu au plancher `1e-6` et un tube vivant reste à `0,0125` ou plus (mesuré : 35 conductivités sur 68
+  400 entre les deux) : le seuil tombe dans un trou. Sous la loi linéaire il n'y a pas de trou : le seuil y est une
+  convention.
+
+### Les directives et les sorties : `lancer`
+
+`nourriture <x> <y> <etage>` (de deux à seize fois, nœuds différents), `debit <I0>` (dans `[0,05 ; 20]`), `loi
+lineaire|sigmoide` et `pas <nombre> <h>`, toutes les quatre ; elles excluent `source` et `puits` ; `mur` et `cout_etage`
+de la partie 1L restent permis (les murs retirent des cellules : toutes les nourritures doivent rester dans la
+composante de la deuxième). L'état est écrit sous l'étiquette `PHYSAR02` (le graphe, les nœuds de nourriture par rang,
+le débit, la loi, le nombre de pas, `h`, les conductivités finales, le générateur). Les mesures sont une ligne par pas :
+la paire tirée (les rangs), la pression de la source, le nombre de tubes vifs et leur longueur (TL). L'aperçu est celui
+des tubes, la référence étant `f(I0)`, avec les nourritures en rouge. Les empreintes des scénarios de l'étape 0, du cœur
+et de la partie 1L ne bougent pas (testé).
+
+### Ce que la sigmoïde fait, « en esprit »
+
+Sur une grille de 10 × 10 à huit voisins, six nourritures, 800 pas à `h = 0,1`, loi sigmoïde, mesuré sur 40 graines
+autres que celles des tests : `TL / TL_MST` vaut en moyenne 1,03, 1,24, 1,55, 1,86, 3,14 pour `I0 = 1, 2, 3, 4, 8` ;
+`FT` vaut 0,00, 0,53, 0,91, 0,99, 1,00 ; `MD / MD_MST` vaut 1,06, 0,98, 0,95, 0,91, 0,85. Pour **chaque graine**, `TL`
+et `FT` ne baissent jamais quand `I0` croît (la plus petite différence est 0 exactement). À `I0 = 1` le réseau est
+presque l'arbre couvrant minimal : `FT = 0` pour les 40 graines, `TL / TL_MST` de 0,98 à 1,12. C'est le sens que dit
+l'article (plus de routes de rechange, une meilleure tenue, un coût plus élevé quand `I0` croît), **aucun chiffre de
+l'article n'est retrouvé** : ni son maillage, ni son pas de temps, ni ses mesures ne sont publiés assez pour cela, et
+nos `I0` ne sont pas les siens (`γ` diffère). À `I0 = 0,05`, le réseau se défait (une nourriture coupée : `MD` infini).
+
+**Sous la loi linéaire, le contraire de ce qu'on attendait** : à faible `I0` (0,05 à 2), `FT = 1` pour chacune des 40
+graines et `TL / TL_MST` de 3,1 à 7,7 : le réseau reste épais, il ne tend pas vers un arbre. L'explication probable (non
+vérifiée) est que la loi linéaire sélectionne le plus court chemin de chaque paire (théorème de Bonifaci et al.), pas
+l'arbre des nourritures, et que les tubes meurent lentement ; avec des longueurs aléatoires, `FT` reste à 1 et `TL /
+TL_MST` baisse encore de 5,3 à 4,0 entre 800 et 3 000 pas. Dans notre schéma, la tendance vers l'arbre à faible `I0` est
+un effet de la sigmoïde.
+
+### Ce que cette partie n'établit pas
+
+- **Aucune valeur de l'article n'est retrouvée** : ni `TL_MST ≈ 1,75`, ni `MD_MST = 0,85`, ni les 14 % de pannes qui
+  déconnectent ; ni `γ = 1,8`, ni `I0 = 2` à son échelle. Le maillage, le pas, les conductivités de départ et les
+  formules des mesures sont les nôtres.
+- **FT est notre lecture** d'une probabilité que l'article ne définit qu'en mots, comptée sur les nourritures et sur les
+  tubes vifs ; l'article la mesure sur le réseau entier, avec une déconnexion « d'une partie du réseau ».
+- **Les tendances sont constatées, pas démontrées**, sur une grille de 10 × 10 à huit voisins, six nourritures, 800 pas,
+  `h = 0,1` et le seuil `0,001` ; rien sur d'autres maillages, d'autres nombres de nourritures, d'autres `γ`, ni sur la
+  vitesse (le réseau fluctue à chaque pas : on mesure l'état au pas 800).
+- **Le tirage de la paire est notre choix** (uniforme parmi les paires ordonnées) ; l'article dit « tirée au hasard »
+  sans dire comment. Les fréquences testées le sont à un seuil mesuré (`chi²`), pas démontrées.
+- **L'arbre double compte les arêtes partagées** : `TL_MST` additionne des distances de la clôture métrique, qui peuvent
+  partager des arêtes du graphe ; `TL / TL_MST` peut donc être sous 1 (mesuré : 0,98).
+- **La loi linéaire ne tend pas vers un arbre** dans nos mesures (voir plus haut) : l'attente de départ du découpage est
+  fausse ; on ne sait pas encore pourquoi, exactement.
+- **Les conductances très étalées** et les mêmes limites du solveur qu'au cœur (`10^10` à `10^16`) ; **Linux** : tout
+  est joué sous Windows, la CI rejouera l'empreinte de `references/reseau-graine-1.empreinte`.
