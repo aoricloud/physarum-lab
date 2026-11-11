@@ -23,7 +23,15 @@ use crate::graphe::Graphe;
 /// # Panique
 ///
 /// Si `conductivites.len()` n'est pas `graphe.nb_aretes()`.
-#[allow(unused_variables)]
 pub fn tubes_vifs(graphe: &Graphe, conductivites: &[f64], seuil: f64) -> (usize, f64) {
-    todo!()
+    assert_eq!(conductivites.len(), graphe.nb_aretes(), "il faut une conductivité par arête");
+    let mut vifs = 0;
+    let mut longueur = 0.0;
+    for (e, &conductivite) in conductivites.iter().enumerate() {
+        if conductivite >= seuil {
+            vifs += 1;
+            longueur += graphe.aretes()[e].longueur;
+        }
+    }
+    (vifs, longueur)
 }
