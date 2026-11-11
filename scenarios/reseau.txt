@@ -1,0 +1,13 @@
+# Un réseau entre six sources de nourriture (Tero et al. 2010, en esprit) : à chaque pas, deux nourritures tirées au
+# hasard sont la source et le puits d'un débit de 3 ; la loi sigmoïde (γ = 2) garde plusieurs routes. Quatre cents pas.
+grille 12 12
+voisinage 8
+nourriture 1 1 0
+nourriture 10 2 0
+nourriture 5 5 0
+nourriture 2 10 0
+nourriture 10 10 0
+nourriture 6 10 0
+debit 3
+loi sigmoide
+pas 400 0.1
