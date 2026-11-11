@@ -9,8 +9,10 @@ en nombres d'après son article, avec un rendu qu'on prend plaisir à regarder :
 et un puits. Ses tubes s'épaississent là où le flux passe et s'amincissent ailleurs, et le réseau se resserre sur le
 plus court chemin, y compris à travers des étages : c'est le théorème de Bonifaci, Mehlhorn et Varma, constaté ici sur
 des graphes tirés au hasard. Pour le voir : `cargo run -- lancer scenarios/chemin.txt --graine 1 --sortie sortie`,
-puis `sortie/apercu.png` ; ou les trois images `apercus/etape-1-chemin-*.png`. Restent, dans l'étape 1, le labyrinthe
-de Nakagaki et les réseaux entre plusieurs sources de nourriture. La V0, six étapes du socle à la page web, est
+puis `sortie/apercu.png` ; ou les trois images `apercus/etape-1-chemin-*.png`. Le labyrinthe de Nakagaki est fait
+aussi (`scenarios/labyrinthe.txt`, les images `apercus/etape-1l-*.png`) : le réseau y garde la route la plus courte
+quelle que soit la graine, et un étage plus rapide n'est rejoint que si ses puits coûtent assez peu. Restent, dans
+l'étape 1, les réseaux entre plusieurs sources de nourriture. La V0, six étapes du socle à la page web, est
 décrite dans [FEUILLE-DE-ROUTE.md](FEUILLE-DE-ROUTE.md) ; ce que chaque étape établit, et ce qu'elle n'établit pas,
 est dans [MODELE.md](MODELE.md). Les trois premières étapes de modèle refont des expériences publiées ; la quatrième
 (la transmission par fusion) est un modèle à nous, présenté comme tel.
