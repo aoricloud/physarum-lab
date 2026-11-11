@@ -145,6 +145,85 @@
 //! mur y est un trou, et si les murs retirent toute la première ou la dernière colonne, la première ou la dernière
 //! ligne, ou tout un étage extrême, l'image rétrécit d'autant (le treillis de `rendu` lui-même ne change pas).
 //!
+//! # Ce que fait l'étape 1, partie « les réseaux » : plusieurs sources de nourriture
+//!
+//! Un scénario peut porter, à la place de `source` et `puits`, les directives des **réseaux** (voir `crate::reseaux`) :
+//!
+//! ```text
+//! nourriture <x> <y> <etage>     un nœud de nourriture (de deux à seize fois, nœuds différents)
+//! debit <I0>                     le débit I0, une fois
+//! loi lineaire|sigmoide          la loi de renforcement, une fois
+//! pas <nombre> <h>               comme plus haut
+//! ```
+//!
+//! Il faut **les quatre sortes** (au moins deux `nourriture`) ; `mur` et `cout_etage` (partie 1L) restent permis. Un
+//! scénario qui a au moins une directive `nourriture`, `debit` ou `loi` est un scénario de **réseau** : il ne doit
+//! avoir ni `source` ni `puits`. Les entiers, `pas` et `mur` se lisent comme plus haut. `nourriture` désigne le nœud
+//! `grille.indice(x, y, etage)` (dans la grille, comme `source`) ; le **rang** d'une nourriture est sa place parmi les
+//! `nourriture` du fichier (0, 1, 2…). `debit` est un flottant décimal (`Directive::flottant`) dans `[0,05 ; 20]`,
+//! **bornes comprises** (`0.05` et `20` passent, `0.04` et `20.01` non) ; `loi` a exactement un argument, `lineaire` ou
+//! `sigmoide` (en minuscules, rien d'autre).
+//!
+//! **Les erreurs des réseaux** sont aussi `ErreurLancer::DirectiveInconnue(ligne)`, rendues avant tout calcul. Sont
+//! **fautives**, en plus de ce qui est dit plus haut : une `nourriture`, un `debit` ou une `loi` au mauvais nombre
+//! d'arguments, mal écrit ou hors bornes (une `nourriture` hors de la grille) ; un second `debit`, une seconde `loi` ;
+//! une `nourriture` dont le nœud a déjà été donné par une `nourriture` plus haut dans le fichier ; une dix-septième
+//! `nourriture`. La ligne rendue, dans cet ordre de priorité :
+//! 1. la ligne de la **première directive fautive** dans l'ordre du fichier (la règle plus haut, étendue aux
+//!    directives des réseaux ; un `pas` en double, un `mur` fautif, etc. comptent) ;
+//! 2. sinon, si le fichier a une directive de réseau **et** une directive `source` ou `puits` (bien écrite : une
+//!    `source` mal écrite est déjà fautive au point 1) : la ligne de la **première** `source` ou `puits` du fichier ;
+//! 3. sinon, pour un réseau, s'il manque `debit`, `loi` ou `pas`, ou s'il y a moins de deux `nourriture` : la ligne de
+//!    la **première directive restante** du fichier (la première de `scenario.directives`, quelle qu'elle soit) ;
+//! 4. sinon, `labyrinthe::construire(grille, murs, couts, n1, n2)` est appelée avec `n1` et `n2` les nœuds de la
+//!    1re et de la 2e `nourriture` : `PuitsMure` rend la ligne de la **2e** `nourriture`, les autres erreurs la ligne
+//!    de la **1re** ; puis la première des autres nourritures (3e, 4e…), dans l'ordre du fichier, qui n'est pas un
+//!    nœud du plan (murée, ou séparée de la 2e par les murs) rend sa propre ligne.
+//!
+//! (Un scénario sans directive de réseau suit les règles plus haut, inchangées : les points 2 et 3 d'avant.)
+//!
+//! **La simulation d'un réseau.** Soit `graphe` le graphe du plan (comme plus haut), `v_0, …, v_{k-1}` les nœuds du
+//! plan des nourritures par rang. Avec `alea = Alea::new(graine)`, `reseau = Reseau::au_hasard(&graphe, &mut alea,
+//! vec![v_0, …], debit, loi)` (les conductivités de départ : `Tubes::au_hasard`), puis `nombre` fois
+//! `reseau.avancer(&graphe, &mut alea, h)` : le même `alea` sert aux conductivités de départ puis aux tirages des
+//! paires, dans cet ordre. Une erreur d'`avancer` au pas numéro `t` rend `ErreurLancer::Calcul(t)` (comme plus haut).
+//!
+//! **L'écriture canonique de l'état d'un réseau.** L'empreinte est le SHA-256 de cette suite d'octets (tous les entiers
+//! en petit-boutiste), après les `nombre` pas :
+//!
+//! ```text
+//! 8 octets          l'étiquette ASCII "PHYSAR02"  (50 48 59 53 41 52 30 32)
+//! ...               graphe.octets()  (le graphe du plan)
+//! 4 octets          k, le nombre de nourritures, en u32
+//! 4 octets × k      le nœud du plan de chaque nourriture, par rang, en u32
+//! 8 octets          debit.to_bits(), en u64
+//! 1 octet           la loi : 0 pour lineaire, 1 pour sigmoide
+//! 4 octets          nombre, en u32
+//! 8 octets          h.to_bits(), en u64
+//! 8 octets × m      la conductivité finale de chaque arête dans l'ordre des indices : to_bits(), en u64
+//! 16 octets         alea.octets(), l'état du générateur APRÈS tous les tirages (départ et pas)
+//! ```
+//!
+//! soit `L + 49 + 4 k + 8 m` octets, `L` étant la longueur de l'écriture du graphe et `m` le nombre d'arêtes. Les
+//! états d'un scénario de tubes (`PHYSAR01`) et de l'étape 0 (`PHYSAR00`) ne changent pas : leurs empreintes non plus.
+//!
+//! **Les mesures d'un réseau.** Un en-tête, puis **une ligne par pas** (`nombre` lignes, aucune si `nombre` vaut 0) :
+//!
+//! ```text
+//! temps,source,puits,pression,vifs,longueur\n
+//! <t>,<i>,<j>,<pression>,<vifs>,<longueur>\n          pour t = 0, 1, …, nombre - 1
+//! ```
+//!
+//! La ligne `t` décrit les conductivités **juste avant** le pas numéro `t`. `<i>` et `<j>` sont les rangs (décimal) de
+//! la nourriture source et de la nourriture puits tirées au pas `t` ; `<pression>` est la pression de la source dans
+//! l'`Etat` de ce pas, par `format!("{:.9}", …)` ; `<vifs>` et `<longueur>` sont les deux nombres de
+//! `mesures::tubes_vifs(&graphe, conductivités, reseaux::SEUIL_VIF)` sur ces conductivités (avant le pas) :
+//! `<longueur>` est TL, par `format!("{:.6}", …)`.
+//!
+//! **L'aperçu d'un réseau.** Le PNG de `reseaux::apercu(&graphe, conductivités_finales, &nourritures_du_plan,
+//! reference, echelle)`, avec `reference = loi.valeur(debit)` (ce qu'un tube qui porte tout le débit tend à valoir) et
+//! la même règle d'échelle que plus haut.
+//!
 //! # Le binaire `physarum`
 //!
 //! `physarum lancer <scénario> --graine <n> --sortie <dossier>` (voir `src/main.rs`) lit le fichier de scénario,
