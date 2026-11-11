@@ -123,9 +123,12 @@
 
 use crate::alea::Alea;
 use crate::empreinte::sha256_hex;
+use crate::graphe::Grille;
 use crate::image::ecrire_png;
+use crate::mesures::tubes_vifs;
 use crate::rendu::{apercu_graphe, treillis};
-use crate::scenario::Scenario;
+use crate::scenario::{Directive, Scenario};
+use crate::tubes::{Tubes, apercu as apercu_tubes};
 
 /// Ce que produit un lancer.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -159,12 +162,55 @@ pub enum ErreurLancer {
 /// module) : rien d'autre n'est calculé alors. `ErreurLancer::Calcul(t)` si le pas numéro `t` des tubes échoue (voir «
 /// Un calcul qui s'arrête »). Dans les deux cas, aucune sortie.
 pub fn lancer(scenario: &Scenario, graine: u64) -> Result<Sortie, ErreurLancer> {
-    // L'étape 0 ne comprend aucune autre directive : la première restante fait refuser le scénario, avant tout
-    // calcul.
-    if let Some(premiere) = scenario.directives.first() {
-        return Err(ErreurLancer::DirectiveInconnue(premiere.ligne));
+    // Sans aucune directive restante, c'est l'étape 0 : la grille seule, rien à simuler.
+    if scenario.directives.is_empty() {
+        return Ok(lancer_grille_seule(scenario, graine));
     }
 
+    // Les trois directives des tubes, toutes les trois ou aucune, vérifiées avant tout calcul.
+    let demande = lire_directives(&scenario.directives, &scenario.grille)?;
+
+    let graphe = scenario.grille.graphe().expect("la grille d'un scénario lu donne toujours un graphe");
+
+    // La simulation : le générateur tout juste amorcé, les tubes au hasard, puis `nombre` pas de longueur `h`.
+    let mut alea = Alea::new(graine);
+    let mut tubes = Tubes::au_hasard(&graphe, &mut alea);
+    let mut mesures = String::from("temps,pression,vifs,longueur\n");
+    for t in 0..demande.nombre {
+        // La ligne `t` décrit l'état juste avant le pas `t` ; sa pression est celle que ce pas calcule.
+        let (vifs, longueur) = tubes_vifs(&graphe, tubes.conductivites(), 0.5);
+        let etat = tubes
+            .avancer(&graphe, demande.source, demande.puits, 1.0, demande.h)
+            .map_err(|_| ErreurLancer::Calcul(t))?;
+        let pression = etat.pressions[demande.source];
+        mesures.push_str(&format!("{t},{pression:.9},{vifs},{longueur:.6}\n"));
+    }
+
+    // L'écriture canonique de l'état avec tubes, après les `nombre` pas.
+    let mut octets = Vec::new();
+    octets.extend_from_slice(b"PHYSAR01");
+    octets.extend_from_slice(&graphe.octets());
+    octets.extend_from_slice(&(demande.source as u32).to_le_bytes());
+    octets.extend_from_slice(&(demande.puits as u32).to_le_bytes());
+    octets.extend_from_slice(&demande.nombre.to_le_bytes());
+    octets.extend_from_slice(&demande.h.to_bits().to_le_bytes());
+    for &conductivite in tubes.conductivites() {
+        octets.extend_from_slice(&conductivite.to_bits().to_le_bytes());
+    }
+    octets.extend_from_slice(&alea.octets());
+    let empreinte = sha256_hex(&octets);
+
+    // L'aperçu : l'échelle `512 / TL` ramenée entre 1 et 8 (division entière), la référence 1.0 (le débit).
+    let (tl, _th) = treillis(&graphe);
+    let echelle = (512 / tl).clamp(1, 8);
+    let image = apercu_tubes(&graphe, tubes.conductivites(), 1.0, echelle);
+    let apercu = ecrire_png(image.largeur, image.hauteur, &image.rvb);
+
+    Ok(Sortie { empreinte, mesures, apercu })
+}
+
+/// Un scénario sans aucune directive restante : l'étape 0 (la grille seule, la graine, rien à simuler).
+fn lancer_grille_seule(scenario: &Scenario, graine: u64) -> Sortie {
     let graphe = scenario.grille.graphe().expect("la grille d'un scénario lu donne toujours un graphe");
 
     // L'écriture canonique de l'état : l'étiquette, le graphe, puis la graine tout juste amorcée.
@@ -188,5 +234,119 @@ pub fn lancer(scenario: &Scenario, graine: u64) -> Result<Sortie, ErreurLancer> 
     let image = apercu_graphe(&graphe, echelle);
     let apercu = ecrire_png(image.largeur, image.hauteur, &image.rvb);
 
-    Ok(Sortie { empreinte, mesures, apercu })
+    Sortie { empreinte, mesures, apercu }
+}
+
+/// Les valeurs des trois directives des tubes, une fois vérifiées.
+struct TubesDemandes {
+    source: usize,
+    puits: usize,
+    nombre: u32,
+    h: f64,
+}
+
+/// Vérifie les directives des tubes et rend leurs valeurs (voir « Les erreurs » dans la documentation du module).
+///
+/// La ligne rendue suit cet ordre : la première directive fautive dans l'ordre du fichier ; sinon la seconde de
+/// `source` et `puits` quand elles désignent le même nœud ; sinon la première directive restante quand il en manque une.
+fn lire_directives(directives: &[Directive], grille: &Grille) -> Result<TubesDemandes, ErreurLancer> {
+    let mut source: Option<(usize, usize)> = None; // (ligne, indice du nœud)
+    let mut puits: Option<(usize, usize)> = None;
+    let mut pas: Option<(u32, f64)> = None;
+    let mut fautive: Option<usize> = None;
+    for directive in directives {
+        let faute = match directive.nom.as_str() {
+            "source" => {
+                if source.is_some() {
+                    Some(directive.ligne)
+                } else {
+                    match noeud(directive, grille) {
+                        Some(indice) => {
+                            source = Some((directive.ligne, indice));
+                            None
+                        }
+                        None => Some(directive.ligne),
+                    }
+                }
+            }
+            "puits" => {
+                if puits.is_some() {
+                    Some(directive.ligne)
+                } else {
+                    match noeud(directive, grille) {
+                        Some(indice) => {
+                            puits = Some((directive.ligne, indice));
+                            None
+                        }
+                        None => Some(directive.ligne),
+                    }
+                }
+            }
+            "pas" => {
+                if pas.is_some() {
+                    Some(directive.ligne)
+                } else {
+                    match nombre_et_h(directive) {
+                        Some(valeur) => {
+                            pas = Some(valeur);
+                            None
+                        }
+                        None => Some(directive.ligne),
+                    }
+                }
+            }
+            _ => Some(directive.ligne),
+        };
+        if fautive.is_none() {
+            fautive = faute;
+        }
+    }
+    if let Some(ligne) = fautive {
+        return Err(ErreurLancer::DirectiveInconnue(ligne));
+    }
+
+    // Deux nœuds différents : la ligne de celle des deux directives qui vient en second.
+    if let (Some((ligne_source, indice_source)), Some((ligne_puits, indice_puits))) = (source, puits)
+        && indice_source == indice_puits
+    {
+        return Err(ErreurLancer::DirectiveInconnue(ligne_source.max(ligne_puits)));
+    }
+
+    // Il manque une directive : la ligne de la première directive restante du fichier.
+    let (Some((_, source)), Some((_, puits)), Some((nombre, h))) = (source, puits, pas) else {
+        let premiere = directives.first().expect("la liste des directives n'est pas vide");
+        return Err(ErreurLancer::DirectiveInconnue(premiere.ligne));
+    };
+
+    Ok(TubesDemandes { source, puits, nombre, h })
+}
+
+/// Le nœud d'une directive `source` ou `puits`, ou `None` si elle est fautive (arguments, forme ou bornes).
+fn noeud(directive: &Directive, grille: &Grille) -> Option<usize> {
+    if directive.args.len() != 3 {
+        return None;
+    }
+    let (x, y, etage) = (directive.entier(0).ok()?, directive.entier(1).ok()?, directive.entier(2).ok()?);
+    // Comparaison en `u64`, avant toute conversion.
+    if x >= u64::from(grille.largeur) || y >= u64::from(grille.hauteur) || etage >= u64::from(grille.etages) {
+        return None;
+    }
+    Some(grille.indice(x as u32, y as u32, etage as u32))
+}
+
+/// Le nombre de pas et le pas de temps d'une directive `pas`, ou `None` si elle est fautive (arguments, forme ou
+/// bornes).
+fn nombre_et_h(directive: &Directive) -> Option<(u32, f64)> {
+    if directive.args.len() != 2 {
+        return None;
+    }
+    let nombre = directive.entier(0).ok()?;
+    if nombre > 100_000 {
+        return None;
+    }
+    let h = directive.flottant(1).ok()?;
+    if h <= 0.0 || h >= 1.0 {
+        return None;
+    }
+    Some((nombre as u32, h))
 }

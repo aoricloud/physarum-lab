@@ -78,3 +78,69 @@ la procédure de référence écrite à part, dans le test et en Python.
 - Aucun lecteur d'images réel n'a ouvert un aperçu dans les tests : le PNG est relu par le décodeur du test.
 - L'aperçu ne dessine que les arêtes entre nœuds voisins d'un même étage : une arête plus longue d'un graphe
   quelconque n'apparaît pas.
+
+## Étape 1 (le cœur) : les tubes qui s'adaptent, et le plus court chemin
+
+Le blob y est un réseau de tubes dont la conductivité suit le flux qui les traverse. Les valeurs attendues des tests,
+chacune avec sa source, sont dans `references/etape-1-valeurs.md`. Cette section couvre le cœur (`chemins`, `tubes`,
+`mesures`, les directives `source`, `puits`, `pas` de `lancer`) ; le labyrinthe, les étages et les réseaux viennent
+dans les parties suivantes de l'étape.
+
+### Les plus courts chemins : `chemins`
+
+Dijkstra sur les coûts (`Arete::cout`), écrit pour comparer, jamais pour simuler. La doc de `chemins` fixe la
+procédure (le nœud de plus petite distance, le plus petit indice à égalité, une comparaison stricte pour garder le
+premier parent) : les distances sont, bit pour bit, celles d'un Bellman-Ford naïf, et les parents sont ceux de la
+procédure. Il sert de témoin : le plus court chemin est calculé ici, puis le réseau de tubes doit le retrouver.
+
+### Le modèle : `tubes`
+
+Le modèle de Tero, Kobayashi et Nakagaki (2007) : `dD/dt = f(|Q|) - D`, avec la loi linéaire `f(Q) = |Q|` du théorème
+de Bonifaci, Mehlhorn et Varma (2012) et le pas d'Euler de Becchetti et al. (2013) : `D <- D + h (|Q| - D)`, avec
+`0 < h < 1`. Le flux d'un tube est `Q = D (p_a - p_b) / cout` : c'est le **coût** que le flux paie, la longueur ne
+sert qu'aux mesures et au dessin. Un flux `I` entre à la source et sort au puits (la masse du solveur). Les
+conductivités de départ sont tirées dans `[0,5 ; 1,0[` (Tero 2007).
+
+Ce qui est **à nous**, sans article derrière :
+
+- le **plancher de conductivité** `PLANCHER = 1e-6` : un tube ne descend pas dessous. Sans lui, le rapport des
+  conductances dépasserait `2^53` et le solveur s'arrêterait sur un pivot nul (voir l'étape 0). Le théorème vaut pour
+  le modèle sans plancher : avec lui, un tube mort est tenu à `PLANCHER` et non à zéro, et il laisse passer un flux
+  de l'ordre de `PLANCHER` ; les tubes du chemin sont à quelques `1e-6` de `I`, pas à `I` ;
+- le **schéma explicite** (Euler) : Tero 2007 emploie un schéma semi-implicite dont le pas n'est pas publié ;
+- la **loi linéaire seule** : la sigmoïde de Tero et al. (2010) a un exposant 1,8 et `powf` est interdit ; elle
+  viendra avec `γ = 2` (partie « les réseaux ») et sera dite telle.
+
+### Les directives et les sorties : `lancer`, `mesures`
+
+`source <x> <y> <etage>`, `puits <x> <y> <etage>` et `pas <nombre> <h>`, toutes les trois ou aucune. L'état est
+écrit sous l'étiquette `PHYSAR01` (le graphe, la source, le puits, le nombre de pas, les bits de `h`, les bits de
+chaque conductivité finale, l'état du générateur après ses tirages). Les mesures sont une ligne par pas : la pression
+de la source, le nombre de tubes vifs (`mesures::tubes_vifs` : conductivité `>= 0,5`) et leur longueur. L'aperçu
+colore chaque tube selon `D / I` (un niveau de 0 à 255, un mélange entier) et les nœuds d'où part un lien entre
+étages vers la teinte des puits.
+
+Un calcul qui s'arrête n'est pas un plantage : si le solveur rend une erreur à un pas, `lancer` rend
+`ErreurLancer::Calcul(pas)` et le binaire sort avec le code 1 et un message, sans rien écrire.
+
+### Ce que cette étape n'établit pas
+
+- **La convergence est constatée, pas démontrée.** Le théorème 2 de Bonifaci et al. est continu et sans plancher ; la
+  preuve de Becchetti et al. pour un pas fini suppose des conductivités de départ égales à 1, des longueurs d'au
+  moins 1 et un `h` petit. Les tests constatent la convergence de notre schéma sur 20 graphes au hasard, un graphe à
+  deux étages et une grille, avec des tolérances mesurées sur d'autres graphes (voir la fiche). Ils ne disent rien
+  des graphes de plus de 30 nœuds, ni de la vitesse de convergence, qui dépend du graphe : environ 500 pas à
+  `h = 0,5` pour les plus lents des graphes au hasard, plus de 400 pour la grille de 16 × 16 du scénario d'exemple.
+- **Plusieurs plus courts chemins** : le théorème ne montre que l'attirance vers l'ensemble des flux de coût minimal
+  ; on teste cela (la conservation sur le sous-graphe des plus courts chemins), pas la convergence vers un point, et
+  la répartition entre les chemins dépend de l'état initial.
+- **L'effet du plancher** n'est mesuré que pour `1e-6` ; une autre valeur changerait les fuites, pas la conclusion.
+- **Des conductances très étalées** (un lien entre étages d'un coût de `10^16`, ou de `10^-16`) arrêtent le calcul :
+  `lancer` rend alors `Calcul(pas)`, et c'est testé. Mais le solveur ne s'arrête pas toujours : entre un rapport de
+  `10^10` et le pivot nul, il peut rendre des pressions fausses sans le dire (voir l'étape 0). Aucun test ne mesure
+  la justesse du modèle dans cette zone ; les scénarios du dépôt gardent des coûts entre 0,1 et 10.
+- **L'aperçu est pour l'œil** : sa formule est fixée en entiers pour que les octets soient les mêmes partout, mais
+  elle ne prouve rien du modèle.
+- **L'égalité entre Linux et Windows** n'est établie que par la CI qui rejoue l'empreinte de référence
+  (`references/chemin-graine-1.empreinte`) sous les deux systèmes ; elle prouve que rien n'a bougé, pas que c'est
+  juste. Sa justesse vient du modèle Python `ref_tubes.py`, qui l'a calculée avant le code.

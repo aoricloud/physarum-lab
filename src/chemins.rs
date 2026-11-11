@@ -69,9 +69,42 @@ pub struct Chemins {
 /// # Panique
 ///
 /// Si `source` n'est pas un indice de nœud du graphe.
-#[allow(unused_variables)]
 pub fn plus_courts(graphe: &Graphe, source: usize) -> Chemins {
-    todo!()
+    let n = graphe.nb_noeuds();
+    assert!(source < n, "le nœud {source} n'est pas dans le graphe");
+    let mut distances = vec![f64::INFINITY; n];
+    let mut parents: Vec<Option<usize>> = vec![None; n];
+    let mut visite = vec![false; n];
+    distances[source] = 0.0;
+    loop {
+        let mut choix: Option<usize> = None;
+        for v in 0..n {
+            if !visite[v] && distances[v] < f64::INFINITY {
+                match choix {
+                    None => choix = Some(v),
+                    Some(w) => {
+                        if distances[v] < distances[w] {
+                            choix = Some(v);
+                        }
+                    }
+                }
+            }
+        }
+        let Some(u) = choix else { break };
+        visite[u] = true;
+        for &e in graphe.incidentes(u) {
+            let arete = &graphe.aretes()[e];
+            let v = if arete.a == u { arete.b } else { arete.a };
+            if !visite[v] {
+                let candidat = distances[u] + arete.cout;
+                if candidat < distances[v] {
+                    distances[v] = candidat;
+                    parents[v] = Some(e);
+                }
+            }
+        }
+    }
+    Chemins { source, distances, parents }
 }
 
 impl Chemins {
@@ -83,8 +116,20 @@ impl Chemins {
     /// # Panique
     ///
     /// Si `cible` n'est pas un indice de nœud du graphe.
-    #[allow(unused_variables)]
     pub fn vers(&self, graphe: &Graphe, cible: usize) -> Option<Vec<usize>> {
-        todo!()
+        assert!(cible < graphe.nb_noeuds(), "le nœud {cible} n'est pas dans le graphe");
+        if self.distances[cible].is_infinite() {
+            return None;
+        }
+        let mut chemin = Vec::new();
+        let mut ici = cible;
+        while ici != self.source {
+            let e = self.parents[ici].expect("un nœud atteint a un parent");
+            chemin.push(e);
+            let arete = &graphe.aretes()[e];
+            ici = if arete.a == ici { arete.b } else { arete.a };
+        }
+        chemin.reverse();
+        Some(chemin)
     }
 }
