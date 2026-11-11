@@ -1,0 +1,12 @@
+# Une mémoire dans la forme : deux nourritures sur l'axe d'une grille, un stimulus (un apport d'agent) au-dessus du
+# milieu pendant les cent premiers pas. L'agent assouplit les tubes qu'il touche ; la loi sigmoïde garde le détour
+# que le stimulus a fait grossir, même quand l'agent a disparu. Quatre cents pas.
+grille 15 11
+voisinage 8
+nourriture 1 5 0
+nourriture 13 5 0
+debit 3
+loi sigmoide
+pas 400 0.1
+agent 8.0 1.0 0.1 0.2
+stimulus 7 2 0 2.0 0 100
