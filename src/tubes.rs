@@ -120,8 +120,8 @@
 
 use crate::alea::Alea;
 use crate::graphe::Graphe;
-use crate::rendu::Image;
-use crate::solveur::ErreurSolveur;
+use crate::rendu::{ECART, FOND, Image, PUITS};
+use crate::solveur::{ErreurSolveur, flux, pressions};
 
 /// Le plancher de conductivité : `1e-6` (voir « Le plancher de conductivité » dans la documentation du module).
 pub const PLANCHER: f64 = 1e-6;
@@ -157,7 +157,6 @@ pub struct Etat {
 
 /// Les conductivités des tubes d'un graphe : une par arête, dans l'ordre des indices, chacune finie et `>= PLANCHER`.
 #[derive(Clone, Debug, PartialEq)]
-#[allow(dead_code)]
 pub struct Tubes {
     conductivites: Vec<f64>,
 }
@@ -170,30 +169,39 @@ impl Tubes {
     /// Dans cet ordre : `ErreurTubes::Taille` si `conductivites.len()` n'est pas `graphe.nb_aretes()` ; puis
     /// `ErreurTubes::Conductivite(e)`, `e` étant le plus petit indice d'une conductivité qui n'est pas un nombre fini
     /// `>= PLANCHER` (`PLANCHER` lui-même est accepté ; NaN, l'infini, zéro et les négatifs sont refusés).
-    #[allow(unused_variables)]
     pub fn new(graphe: &Graphe, conductivites: Vec<f64>) -> Result<Tubes, ErreurTubes> {
-        todo!()
+        if conductivites.len() != graphe.nb_aretes() {
+            return Err(ErreurTubes::Taille);
+        }
+        for (e, &d) in conductivites.iter().enumerate() {
+            if !(d.is_finite() && d >= PLANCHER) {
+                return Err(ErreurTubes::Conductivite(e));
+            }
+        }
+        Ok(Tubes { conductivites })
     }
 
     /// Des tubes de même conductivité `valeur`. Mêmes erreurs que [`Tubes::new`] (`Conductivite(0)` si `valeur` ne
     /// convient pas et que le graphe a au moins une arête ; aucune erreur de conductivité sans arête).
-    #[allow(unused_variables)]
     pub fn uniformes(graphe: &Graphe, valeur: f64) -> Result<Tubes, ErreurTubes> {
-        todo!()
+        Tubes::new(graphe, vec![valeur; graphe.nb_aretes()])
     }
 
     /// Les conductivités de départ du modèle de Tero 2007 (« tirées au hasard, uniformément dans l'intervalle [0,5 ;
     /// 1,0] ») : pour chaque arête, par indice croissant, `0.5 + 0.5 * alea.suivant_f64()` (une addition d'un produit,
     /// dans cet ordre ; chaque tirage consomme **deux** tirages de 32 bits, voir `Alea::suivant_f64`). Elles sont dans
     /// `[0.5, 1.0[`, donc `>= PLANCHER`. `alea` a avancé de `2 * nb_aretes` tirages de 32 bits ensuite.
-    #[allow(unused_variables)]
     pub fn au_hasard(graphe: &Graphe, alea: &mut Alea) -> Tubes {
-        todo!()
+        let mut conductivites = Vec::with_capacity(graphe.nb_aretes());
+        for _ in 0..graphe.nb_aretes() {
+            conductivites.push(0.5 + 0.5 * alea.suivant_f64());
+        }
+        Tubes { conductivites }
     }
 
     /// Les conductivités, dans l'ordre des indices d'arête.
     pub fn conductivites(&self) -> &[f64] {
-        todo!()
+        &self.conductivites
     }
 
     /// Un pas du modèle (voir « Le pas, à la lettre » et « Les vérifications » dans la documentation du module) :
@@ -202,7 +210,6 @@ impl Tubes {
     /// # Erreurs
     ///
     /// Celles de « Les vérifications », dans leur ordre : la première qui s'applique ; alors rien n'a changé.
-    #[allow(unused_variables)]
     pub fn avancer(
         &mut self,
         graphe: &Graphe,
@@ -211,7 +218,39 @@ impl Tubes {
         debit: f64,
         h: f64,
     ) -> Result<Etat, ErreurTubes> {
-        todo!()
+        // 1. la taille
+        if graphe.nb_aretes() != self.conductivites.len() {
+            return Err(ErreurTubes::Taille);
+        }
+        // 2. les nœuds
+        if source >= graphe.nb_noeuds() || puits >= graphe.nb_noeuds() || source == puits {
+            return Err(ErreurTubes::Noeud);
+        }
+        // 3. le débit
+        if !(debit.is_finite() && debit > 0.0) {
+            return Err(ErreurTubes::Debit);
+        }
+        // 4. le pas
+        if !(h.is_finite() && h > 0.0 && h < 1.0) {
+            return Err(ErreurTubes::Pas);
+        }
+        // 5. le solveur
+        let mut conductances = Vec::with_capacity(graphe.nb_aretes());
+        for e in 0..graphe.nb_aretes() {
+            conductances.push(self.conductivites[e] / graphe.aretes()[e].cout);
+        }
+        let mut injections = vec![0.0; graphe.nb_noeuds()];
+        injections[source] = debit;
+        let p = pressions(graphe, &conductances, &injections, puits).map_err(ErreurTubes::Solveur)?;
+        let q = flux(graphe, &conductances, &p);
+        // La mise à jour, seulement une fois tous les flux calculés.
+        let mut mises_a_jour = Vec::with_capacity(self.conductivites.len());
+        for (e, &q_e) in q.iter().enumerate() {
+            let d = self.conductivites[e] + h * (q_e.abs() - self.conductivites[e]);
+            mises_a_jour.push(if d >= PLANCHER { d } else { PLANCHER });
+        }
+        self.conductivites = mises_a_jour;
+        Ok(Etat { pressions: p, flux: q })
     }
 }
 
@@ -223,7 +262,120 @@ impl Tubes {
 ///
 /// Si `echelle` vaut 0, si `reference` n'est pas un nombre fini `> 0.0`, ou si `conductivites.len()` n'est pas le
 /// nombre d'arêtes du graphe.
-#[allow(unused_variables)]
 pub fn apercu(graphe: &Graphe, conductivites: &[f64], reference: f64, echelle: u32) -> Image {
-    todo!()
+    assert!(echelle > 0, "l'échelle doit être strictement positive");
+    assert!(reference.is_finite() && reference > 0.0, "la référence doit être un nombre fini strictement positif");
+    assert_eq!(conductivites.len(), graphe.nb_aretes(), "il faut une conductivité par arête");
+
+    // Le cadre, sur tous les nœuds, le premier compris.
+    let noeuds = graphe.noeuds();
+    let premier = noeuds[0];
+    let mut xmin = premier.x as i64;
+    let mut xmax = xmin;
+    let mut ymin = premier.y as i64;
+    let mut ymax = ymin;
+    let mut emax = premier.etage;
+    for noeud in &noeuds[1..] {
+        let x = noeud.x as i64;
+        let y = noeud.y as i64;
+        xmin = xmin.min(x);
+        xmax = xmax.max(x);
+        ymin = ymin.min(y);
+        ymax = ymax.max(y);
+        emax = emax.max(noeud.etage);
+    }
+    let tl = 2 * (xmax - xmin) + 1;
+    let th = 2 * (ymax - ymin) + 1;
+    let largeur = (emax as i64 + 1) * tl + emax as i64 * ECART as i64;
+    let pas = tl + ECART as i64;
+    let l = largeur as usize;
+
+    // Le niveau de chaque arête et les deux maxima de chaque nœud.
+    let mut niv = Vec::with_capacity(conductivites.len());
+    for &d in conductivites {
+        niv.push(niveau(d, reference));
+    }
+    let mut du_noeud = vec![0_u8; graphe.nb_noeuds()];
+    let mut du_lien: Vec<Option<u8>> = vec![None; graphe.nb_noeuds()];
+    for (e, arete) in graphe.aretes().iter().enumerate() {
+        du_noeud[arete.a] = du_noeud[arete.a].max(niv[e]);
+        du_noeud[arete.b] = du_noeud[arete.b].max(niv[e]);
+        if noeuds[arete.a].etage != noeuds[arete.b].etage {
+            du_lien[arete.a] = Some(du_lien[arete.a].map_or(niv[e], |m| m.max(niv[e])));
+            du_lien[arete.b] = Some(du_lien[arete.b].map_or(niv[e], |m| m.max(niv[e])));
+        }
+    }
+
+    // 1. Tout en FOND.
+    let mut points = vec![FOND; l * th as usize];
+
+    // 2. Le point du milieu de chaque arête d'un même étage et voisine, le plus épais l'emportant.
+    let mut milieu = vec![0_u8; l * th as usize];
+    for (e, arete) in graphe.aretes().iter().enumerate() {
+        let a = noeuds[arete.a];
+        let b = noeuds[arete.b];
+        if a.etage != b.etage || (a.x as i64 - b.x as i64).abs() > 1 || (a.y as i64 - b.y as i64).abs() > 1 {
+            continue;
+        }
+        let col = a.etage as i64 * pas + (a.x as i64 + b.x as i64 - 2 * xmin);
+        let ligne = a.y as i64 + b.y as i64 - 2 * ymin;
+        let i = ligne as usize * l + col as usize;
+        milieu[i] = milieu[i].max(niv[e]);
+    }
+    for (i, &n) in milieu.iter().enumerate() {
+        points[i] = melange(FOND, VIF, n);
+    }
+
+    // 3. Le point de chaque nœud, par indice croissant.
+    for (i, noeud) in noeuds.iter().enumerate() {
+        let col = noeud.etage as i64 * pas + 2 * (noeud.x as i64 - xmin);
+        let ligne = 2 * (noeud.y as i64 - ymin);
+        points[ligne as usize * l + col as usize] = melange(FOND, VIF, du_noeud[i]);
+    }
+
+    // 4. Les bouts des liens entre étages, vers la teinte des puits.
+    for (i, noeud) in noeuds.iter().enumerate() {
+        let Some(n) = du_lien[i] else { continue };
+        let col = noeud.etage as i64 * pas + 2 * (noeud.x as i64 - xmin);
+        let ligne = 2 * (noeud.y as i64 - ymin);
+        let j = ligne as usize * l + col as usize;
+        points[j] = melange(points[j], PUITS, n);
+    }
+
+    // L'agrandissement : chaque point devient un carré de `echelle × echelle` pixels.
+    let grand_largeur = l * echelle as usize;
+    let grand_hauteur = th as usize * echelle as usize;
+    let mut rvb = Vec::with_capacity(3 * grand_largeur * grand_hauteur);
+    for ligne in 0..th as usize {
+        let mut rangee = Vec::with_capacity(3 * grand_largeur);
+        for &couleur in &points[ligne * l..(ligne + 1) * l] {
+            for _ in 0..echelle {
+                rangee.extend_from_slice(&couleur);
+            }
+        }
+        for _ in 0..echelle {
+            rvb.extend_from_slice(&rangee);
+        }
+    }
+
+    Image { largeur: grand_largeur as u32, hauteur: grand_hauteur as u32, rvb }
+}
+
+/// Le niveau d'une conductivité `d` pour une référence `reference` (voir « L'aperçu des tubes »).
+fn niveau(d: f64, reference: f64) -> u8 {
+    let t = d / reference;
+    if t >= 1.0 {
+        255
+    } else if t > 0.0 {
+        (t * 255.0).round() as u8
+    } else {
+        0
+    }
+}
+
+/// Le mélange entier de deux couleurs, canal par canal, au niveau `n` (voir « L'aperçu des tubes »).
+fn melange(a: [u8; 3], b: [u8; 3], n: u8) -> [u8; 3] {
+    let n = u32::from(n);
+    let canal = |a: u8, b: u8| -> u8 { ((u32::from(a) * (255 - n) + u32::from(b) * n + 127) / 255) as u8 };
+    [canal(a[0], b[0]), canal(a[1], b[1]), canal(a[2], b[2])]
 }
