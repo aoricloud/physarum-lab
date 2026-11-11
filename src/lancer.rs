@@ -331,13 +331,14 @@
 
 use crate::alea::Alea;
 use crate::empreinte::sha256_hex;
-use crate::graphe::Grille;
+use crate::graphe::{Graphe, Grille};
 use crate::image::ecrire_png;
-use crate::labyrinthe::{CoutEtage, ErreurLabyrinthe, FACTEUR_MAX, FACTEUR_MIN, Mur, construire};
+use crate::labyrinthe::{CoutEtage, ErreurLabyrinthe, FACTEUR_MAX, FACTEUR_MIN, Mur, Plan, construire};
 use crate::mesures::tubes_vifs;
 use crate::rendu::{apercu_graphe, treillis};
-use crate::reseaux::{Loi, Reseau, SEUIL_VIF, apercu as apercu_reseau};
+use crate::reseaux::{Loi, Reseau, SEUIL_VIF, apercu as apercu_reseau, tirer_paire};
 use crate::scenario::{Directive, Scenario};
+use crate::souvenir::{Couplage, Memoire, Transport, apercu as apercu_souvenir};
 use crate::tubes::{Tubes, apercu as apercu_tubes};
 
 /// Ce que produit un lancer.
@@ -393,8 +394,18 @@ fn lancer_tubes(scenario: &Scenario, demande: &TubesDemandes, graine: u64) -> Re
             _ => ErreurLancer::DirectiveInconnue(demande.ligne_source),
         },
     )?;
+    // La mémoire : un `stimulus` sans `agent` (après les erreurs du plan), puis un `stimulus` hors du plan.
+    if !demande.stimuli.is_empty() && demande.agent.is_none() {
+        return Err(ErreurLancer::DirectiveInconnue(premiere_ligne(scenario)));
+    }
+    let stimuli = placer_stimuli(&plan, &demande.stimuli)?;
     let graphe = plan.graphe;
     let (source, puits) = (plan.source, plan.puits);
+
+    // Avec un agent, la simulation, l'état `PHYSAR03`, les mesures et l'aperçu changent (voir plus bas).
+    if let Some(agent) = &demande.agent {
+        return lancer_tubes_agent(demande, agent, &graphe, source, puits, &stimuli, graine);
+    }
 
     // La simulation : le générateur tout juste amorcé, les tubes au hasard, puis `nombre` pas de longueur `h`.
     let mut alea = Alea::new(graine);
@@ -450,7 +461,18 @@ fn lancer_reseau(scenario: &Scenario, demande: &ReseauDemande, graine: u64) -> R
             None => return Err(ErreurLancer::DirectiveInconnue(ligne)),
         }
     }
+    // La mémoire : un `stimulus` sans `agent` (après les erreurs du plan et des nourritures), puis un `stimulus` hors
+    // du plan.
+    if !demande.stimuli.is_empty() && demande.agent.is_none() {
+        return Err(ErreurLancer::DirectiveInconnue(premiere_ligne(scenario)));
+    }
+    let stimuli = placer_stimuli(&plan, &demande.stimuli)?;
     let graphe = plan.graphe;
+
+    // Avec un agent, la simulation, l'état `PHYSAR03`, les mesures et l'aperçu changent (voir plus bas).
+    if let Some(agent) = &demande.agent {
+        return lancer_reseau_agent(demande, agent, &graphe, &du_plan, &stimuli, graine);
+    }
 
     // La simulation : le générateur tout juste amorcé, les conductivités de départ, puis `nombre` pas.
     let mut alea = Alea::new(graine);
@@ -538,6 +560,10 @@ struct TubesDemandes {
     /// Les murs et les coûts d'étage, dans l'ordre du fichier.
     murs: Vec<Mur>,
     couts: Vec<CoutEtage>,
+    /// Le réglage de l'agent, `None` pour un scénario sans `agent`.
+    agent: Option<AgentReglage>,
+    /// Les stimuli, dans l'ordre du fichier.
+    stimuli: Vec<Stimulus>,
 }
 
 /// Les valeurs des directives d'un réseau, une fois vérifiées.
@@ -551,6 +577,37 @@ struct ReseauDemande {
     /// Les murs et les coûts d'étage, dans l'ordre du fichier.
     murs: Vec<Mur>,
     couts: Vec<CoutEtage>,
+    /// Le réglage de l'agent, `None` pour un scénario sans `agent`.
+    agent: Option<AgentReglage>,
+    /// Les stimuli, dans l'ordre du fichier.
+    stimuli: Vec<Stimulus>,
+}
+
+/// Le réglage de l'agent : les quatre flottants de la directive `agent`.
+struct AgentReglage {
+    alpha: f64,
+    c0: f64,
+    kappa: f64,
+    k: f64,
+}
+
+/// Un stimulus lu dans la grille : son nœud, son débit et sa fenêtre de pas.
+struct Stimulus {
+    /// La ligne de la directive (pour les erreurs).
+    ligne: usize,
+    /// L'indice du nœud dans la **grille** (le plan le renumérote).
+    indice: usize,
+    debit: f64,
+    debut: u32,
+    fin: u32,
+}
+
+/// Un stimulus placé sur un nœud du **plan**.
+struct StimPlan {
+    noeud: usize,
+    debit: f64,
+    debut: u32,
+    fin: u32,
 }
 
 /// Ce que demande un scénario simulé : des tubes, ou un réseau.
@@ -561,6 +618,9 @@ enum Demande {
 
 /// Le nombre de nourritures permis.
 const NOURRITURES_MAX: usize = 16;
+
+/// Le nombre de stimuli permis.
+const STIMULI_MAX: usize = 16;
 
 /// Le débit d'un réseau : un flottant décimal dans `[0.05 ; 20]`, bornes comprises, ou `None`.
 fn debit(directive: &Directive) -> Option<f64> {
@@ -602,6 +662,8 @@ fn lire_directives(directives: &[Directive], grille: &Grille) -> Result<Demande,
     let mut nourritures: Vec<(usize, usize)> = Vec::new(); // (ligne, indice du nœud)
     let mut debit_lu: Option<f64> = None;
     let mut loi_lue: Option<Loi> = None;
+    let mut agent_lu: Option<AgentReglage> = None;
+    let mut stimuli: Vec<Stimulus> = Vec::new();
     let mut reseau = false;
     let mut premiere_source_ou_puits: Option<usize> = None;
     let mut fautive: Option<usize> = None;
@@ -701,6 +763,26 @@ fn lire_directives(directives: &[Directive], grille: &Grille) -> Result<Demande,
                 }
                 _ => Some(directive.ligne),
             },
+            "agent" => {
+                if agent_lu.is_some() {
+                    Some(directive.ligne)
+                } else {
+                    match agent(directive) {
+                        Some(valeur) => {
+                            agent_lu = Some(valeur);
+                            None
+                        }
+                        None => Some(directive.ligne),
+                    }
+                }
+            }
+            "stimulus" => match stimulus(directive, grille) {
+                Some(valeur) if stimuli.len() < STIMULI_MAX => {
+                    stimuli.push(valeur);
+                    None
+                }
+                _ => Some(directive.ligne),
+            },
             _ => Some(directive.ligne),
         };
         if fautive.is_none() {
@@ -721,7 +803,17 @@ fn lire_directives(directives: &[Directive], grille: &Grille) -> Result<Demande,
             let premiere = directives.first().expect("la liste des directives n'est pas vide");
             return Err(ErreurLancer::DirectiveInconnue(premiere.ligne));
         };
-        return Ok(Demande::Reseau(ReseauDemande { nourritures, debit, loi, nombre, h, murs, couts }));
+        return Ok(Demande::Reseau(ReseauDemande {
+            nourritures,
+            debit,
+            loi,
+            nombre,
+            h,
+            murs,
+            couts,
+            agent: agent_lu,
+            stimuli,
+        }));
     }
 
     // Deux nœuds différents : la ligne de celle des deux directives qui vient en second.
@@ -737,7 +829,18 @@ fn lire_directives(directives: &[Directive], grille: &Grille) -> Result<Demande,
         return Err(ErreurLancer::DirectiveInconnue(premiere.ligne));
     };
 
-    Ok(Demande::Tubes(TubesDemandes { source, ligne_source, puits, ligne_puits, nombre, h, murs, couts }))
+    Ok(Demande::Tubes(TubesDemandes {
+        source,
+        ligne_source,
+        puits,
+        ligne_puits,
+        nombre,
+        h,
+        murs,
+        couts,
+        agent: agent_lu,
+        stimuli,
+    }))
 }
 
 /// Le nœud d'une directive `source` ou `puits`, ou `None` si elle est fautive (arguments, forme ou bornes).
@@ -806,4 +909,257 @@ fn nombre_et_h(directive: &Directive) -> Option<(u32, f64)> {
         return None;
     }
     Some((nombre as u32, h))
+}
+
+/// Le réglage d'une directive `agent`, ou `None` si elle est fautive (arguments, forme ou bornes ; bornes comprises).
+fn agent(directive: &Directive) -> Option<AgentReglage> {
+    if directive.args.len() != 4 {
+        return None;
+    }
+    let alpha = directive.flottant(0).ok()?;
+    let c0 = directive.flottant(1).ok()?;
+    let kappa = directive.flottant(2).ok()?;
+    let k = directive.flottant(3).ok()?;
+    if !(0.0..=100.0).contains(&alpha)
+        || !(0.001..=1000.0).contains(&c0)
+        || !(0.0..=10.0).contains(&kappa)
+        || !(0.0..=10.0).contains(&k)
+    {
+        return None;
+    }
+    Some(AgentReglage { alpha, c0, kappa, k })
+}
+
+/// Un stimulus d'une directive `stimulus`, ou `None` si elle est fautive (arguments, forme ou bornes ; bornes
+/// comprises).
+fn stimulus(directive: &Directive, grille: &Grille) -> Option<Stimulus> {
+    if directive.args.len() != 6 {
+        return None;
+    }
+    let x = directive.entier(0).ok()?;
+    let y = directive.entier(1).ok()?;
+    let etage = directive.entier(2).ok()?;
+    if x >= u64::from(grille.largeur) || y >= u64::from(grille.hauteur) || etage >= u64::from(grille.etages) {
+        return None;
+    }
+    let debit = directive.flottant(3).ok()?;
+    if !(debit > 0.0 && debit <= 100.0) {
+        return None;
+    }
+    let debut = directive.entier(4).ok()?;
+    let fin = directive.entier(5).ok()?;
+    if !(debut < fin && fin <= 100_000) {
+        return None;
+    }
+    Some(Stimulus {
+        ligne: directive.ligne,
+        indice: grille.indice(x as u32, y as u32, etage as u32),
+        debit,
+        debut: debut as u32,
+        fin: fin as u32,
+    })
+}
+
+/// La ligne de la première directive restante du fichier (voir « Les erreurs » dans la documentation du module).
+fn premiere_ligne(scenario: &Scenario) -> usize {
+    scenario.directives.first().expect("un scénario lancé a au moins une directive restante").ligne
+}
+
+/// Place les stimuli sur les nœuds du plan ; le premier stimulus hors du plan rend sa propre ligne (voir « Les
+/// erreurs » dans la documentation du module).
+fn placer_stimuli(plan: &Plan, stimuli: &[Stimulus]) -> Result<Vec<StimPlan>, ErreurLancer> {
+    let mut places = Vec::with_capacity(stimuli.len());
+    for stimulus in stimuli {
+        match plan.noeuds[stimulus.indice] {
+            Some(noeud) => {
+                places.push(StimPlan { noeud, debit: stimulus.debit, debut: stimulus.debut, fin: stimulus.fin })
+            }
+            None => return Err(ErreurLancer::DirectiveInconnue(stimulus.ligne)),
+        }
+    }
+    Ok(places)
+}
+
+/// La référence de l'agent pour l'aperçu : la plus grande concentration finale (comparaisons `>` à partir de `0.0`) si
+/// elle est `> 0.0`, sinon `1.0` (voir « L'aperçu avec agent » dans la documentation du module).
+fn reference_agent(concentrations: &[f64]) -> f64 {
+    let mut max = 0.0;
+    for &concentration in concentrations {
+        if concentration > max {
+            max = concentration;
+        }
+    }
+    if max > 0.0 { max } else { 1.0 }
+}
+
+/// Les apports d'agent du pas `t` : les stimuli tels que `debut <= t < fin`, dans l'ordre du fichier.
+fn apports(stimuli: &[StimPlan], t: u32) -> Vec<(usize, f64)> {
+    stimuli
+        .iter()
+        .filter(|stimulus| stimulus.debut <= t && t < stimulus.fin)
+        .map(|stimulus| (stimulus.noeud, stimulus.debit))
+        .collect()
+}
+
+/// Un scénario de **tubes avec agent** : la simulation couplée, puis l'état `PHYSAR03`, les mesures et l'aperçu.
+fn lancer_tubes_agent(
+    demande: &TubesDemandes,
+    agent: &AgentReglage,
+    graphe: &Graphe,
+    source: usize,
+    puits: usize,
+    stimuli: &[StimPlan],
+    graine: u64,
+) -> Result<Sortie, ErreurLancer> {
+    let couplage = Couplage { force: agent.alpha, saturation: agent.c0 };
+    let transport = Transport { diffusion: agent.kappa, perte: agent.k };
+
+    // La simulation : le générateur tout juste amorcé, la mémoire au hasard, puis `nombre` pas couplés.
+    let mut alea = Alea::new(graine);
+    let mut memoire = Memoire::au_hasard(graphe, &mut alea);
+    let mut mesures = String::from("temps,pression,vifs,longueur,masse\n");
+    for t in 0..demande.nombre {
+        // La ligne `t` décrit l'état juste avant le pas `t` ; sa pression est celle que ce pas calcule.
+        let (vifs, longueur) = tubes_vifs(graphe, memoire.conductivites(), 0.5);
+        let masse = memoire.agent().masse();
+        let pas = memoire
+            .avancer(graphe, source, puits, 1.0, Loi::Lineaire, &couplage, &transport, &apports(stimuli, t), demande.h)
+            .map_err(|_| ErreurLancer::Calcul(t))?;
+        let pression = pas.etat.pressions[source];
+        mesures.push_str(&format!("{t},{pression:.9},{vifs},{longueur:.6},{masse:.9}\n"));
+    }
+
+    // L'écriture canonique de l'état avec agent, après les `nombre` pas.
+    let mut octets = Vec::new();
+    octets.extend_from_slice(b"PHYSAR03");
+    octets.extend_from_slice(&graphe.octets());
+    octets.push(0); // la famille : des tubes
+    octets.extend_from_slice(&2_u32.to_le_bytes());
+    octets.extend_from_slice(&(source as u32).to_le_bytes());
+    octets.extend_from_slice(&(puits as u32).to_le_bytes());
+    octets.extend_from_slice(&1.0_f64.to_bits().to_le_bytes());
+    octets.push(0); // la loi : lineaire
+    octets.extend_from_slice(&demande.nombre.to_le_bytes());
+    octets.extend_from_slice(&demande.h.to_bits().to_le_bytes());
+    for valeur in [agent.alpha, agent.c0, agent.kappa, agent.k] {
+        octets.extend_from_slice(&valeur.to_bits().to_le_bytes());
+    }
+    octets.extend_from_slice(&(stimuli.len() as u32).to_le_bytes());
+    for stimulus in stimuli {
+        octets.extend_from_slice(&(stimulus.noeud as u32).to_le_bytes());
+        octets.extend_from_slice(&stimulus.debit.to_bits().to_le_bytes());
+        octets.extend_from_slice(&stimulus.debut.to_le_bytes());
+        octets.extend_from_slice(&stimulus.fin.to_le_bytes());
+    }
+    for &conductivite in memoire.conductivites() {
+        octets.extend_from_slice(&conductivite.to_bits().to_le_bytes());
+    }
+    for &concentration in memoire.agent().concentrations() {
+        octets.extend_from_slice(&concentration.to_bits().to_le_bytes());
+    }
+    octets.extend_from_slice(&alea.octets());
+    let empreinte = sha256_hex(&octets);
+
+    // L'aperçu : la référence des tubes 1.0 (le débit), celle de l'agent et la même règle d'échelle.
+    let (tl, _th) = treillis(graphe);
+    let echelle = (512 / tl).clamp(1, 8);
+    let reference = reference_agent(memoire.agent().concentrations());
+    let image =
+        apercu_souvenir(graphe, memoire.conductivites(), memoire.agent().concentrations(), 1.0, reference, echelle);
+    let apercu = ecrire_png(image.largeur, image.hauteur, &image.rvb);
+
+    Ok(Sortie { empreinte, mesures, apercu })
+}
+
+/// Un scénario de **réseau avec agent** : la simulation couplée, puis l'état `PHYSAR03`, les mesures et l'aperçu.
+fn lancer_reseau_agent(
+    demande: &ReseauDemande,
+    agent: &AgentReglage,
+    graphe: &Graphe,
+    nourritures: &[usize],
+    stimuli: &[StimPlan],
+    graine: u64,
+) -> Result<Sortie, ErreurLancer> {
+    let couplage = Couplage { force: agent.alpha, saturation: agent.c0 };
+    let transport = Transport { diffusion: agent.kappa, perte: agent.k };
+
+    // La simulation : le générateur tout juste amorcé, la mémoire au hasard, puis `nombre` pas couplés (la paire est
+    // tirée à chaque pas, avant `avancer`).
+    let mut alea = Alea::new(graine);
+    let mut memoire = Memoire::au_hasard(graphe, &mut alea);
+    let mut mesures = String::from("temps,source,puits,pression,vifs,longueur,masse\n");
+    for t in 0..demande.nombre {
+        // La ligne `t` décrit les conductivités juste avant le pas `t`.
+        let (vifs, longueur) = tubes_vifs(graphe, memoire.conductivites(), SEUIL_VIF);
+        let masse = memoire.agent().masse();
+        let (i, j) = tirer_paire(&mut alea, nourritures.len());
+        let source = nourritures[i];
+        let puits = nourritures[j];
+        let pas = memoire
+            .avancer(
+                graphe,
+                source,
+                puits,
+                demande.debit,
+                demande.loi,
+                &couplage,
+                &transport,
+                &apports(stimuli, t),
+                demande.h,
+            )
+            .map_err(|_| ErreurLancer::Calcul(t))?;
+        let pression = pas.etat.pressions[source];
+        mesures.push_str(&format!("{t},{i},{j},{pression:.9},{vifs},{longueur:.6},{masse:.9}\n"));
+    }
+
+    // L'écriture canonique de l'état avec agent, après les `nombre` pas.
+    let mut octets = Vec::new();
+    octets.extend_from_slice(b"PHYSAR03");
+    octets.extend_from_slice(&graphe.octets());
+    octets.push(1); // la famille : un réseau
+    octets.extend_from_slice(&(nourritures.len() as u32).to_le_bytes());
+    for &noeud in nourritures {
+        octets.extend_from_slice(&(noeud as u32).to_le_bytes());
+    }
+    octets.extend_from_slice(&demande.debit.to_bits().to_le_bytes());
+    octets.push(match demande.loi {
+        Loi::Lineaire => 0,
+        Loi::Sigmoide => 1,
+    });
+    octets.extend_from_slice(&demande.nombre.to_le_bytes());
+    octets.extend_from_slice(&demande.h.to_bits().to_le_bytes());
+    for valeur in [agent.alpha, agent.c0, agent.kappa, agent.k] {
+        octets.extend_from_slice(&valeur.to_bits().to_le_bytes());
+    }
+    octets.extend_from_slice(&(stimuli.len() as u32).to_le_bytes());
+    for stimulus in stimuli {
+        octets.extend_from_slice(&(stimulus.noeud as u32).to_le_bytes());
+        octets.extend_from_slice(&stimulus.debit.to_bits().to_le_bytes());
+        octets.extend_from_slice(&stimulus.debut.to_le_bytes());
+        octets.extend_from_slice(&stimulus.fin.to_le_bytes());
+    }
+    for &conductivite in memoire.conductivites() {
+        octets.extend_from_slice(&conductivite.to_bits().to_le_bytes());
+    }
+    for &concentration in memoire.agent().concentrations() {
+        octets.extend_from_slice(&concentration.to_bits().to_le_bytes());
+    }
+    octets.extend_from_slice(&alea.octets());
+    let empreinte = sha256_hex(&octets);
+
+    // L'aperçu : la référence `f(I0)` pour les tubes, celle de l'agent et la même règle d'échelle.
+    let (tl, _th) = treillis(graphe);
+    let echelle = (512 / tl).clamp(1, 8);
+    let reference = reference_agent(memoire.agent().concentrations());
+    let image = apercu_souvenir(
+        graphe,
+        memoire.conductivites(),
+        memoire.agent().concentrations(),
+        demande.loi.valeur(demande.debit),
+        reference,
+        echelle,
+    );
+    let apercu = ecrire_png(image.largeur, image.hauteur, &image.rvb);
+
+    Ok(Sortie { empreinte, mesures, apercu })
 }
