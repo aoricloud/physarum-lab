@@ -368,9 +368,10 @@ qui lira les concentrations à chaque pas. Les valeurs attendues des tests, chac
 
 ### Les directives et les sorties
 
-Aucune pour l'instant : `lancer` ne change pas dans cette partie. Les directives `stimulus` viendront en 2M, avec
-l'effet de l'agent sur les tubes. L'aperçu de l'agent (`souvenir::apercu`) est celui des tubes (`tubes::apercu`) avec
-les nœuds colorés selon la concentration (la couleur `AGENT`, en entiers) : « la tache d'agent qui suit les tubes ».
+Aucune dans cette partie : `lancer` n'y change pas. Les directives `agent` et `stimulus` viennent avec 2M (plus
+bas), avec l'effet de l'agent sur les tubes. L'aperçu de l'agent (`souvenir::apercu`) est celui des tubes
+(`tubes::apercu`) avec les nœuds colorés selon la concentration (la couleur `AGENT`, en entiers) : « la tache d'agent
+qui suit les tubes ».
 
 ### Ce que la partie 2T fait voir
 
@@ -399,3 +400,108 @@ emporté : 0,06 contre 0,11. C'est le mécanisme de l'article (l'agent suit le f
   12 × 9).
 - **Les tolérances** (le bilan de masse, la fuite, les parts sur les tubes vifs) sont mesurées sur des grilles de 36 à
   120 nœuds, sous Windows seulement ; la CI rejouera sous Linux (les opérations sont `+ - * /`, donc les mêmes bits).
+
+## Étape 2 (partie 2M) : la mémoire dans la forme
+
+Où l'on ferme la boucle : jusqu'ici l'agent (partie 2T) était porté par les flux sans rien leur faire. Ici **l'agent
+change la croissance des tubes**, et les tubes changent où va l'agent. Le but est de voir si la forme du réseau garde la
+trace d'un stimulus après son retrait. **Le modèle est le nôtre, dit comme tel ; le résultat n'était pas connu d'avance
+et est rapporté tel quel, négatif compris.**
+
+### Ce qui vient de Kramar et Alim, et ce qui est à nous
+
+- **Ce qui vient de Kramar et Alim** (PNAS 118(10), 2021) : le **mécanisme** (un agent soluble libéré au stimulus, porté
+  par le flux, assouplit la paroi des tubes, qui se dilatent) ; la **forme de la saturation** de l'effet, leur éq. (2)
+  `E = E_0 - ΔE c / (c_0 + c)` (de type Michaelis, lue sur le texte extrait du PDF, symboles grecs rétablis par le sens)
+  ; et ce que l'**expérience** montre sur un réseau vivant (un anneau de tubes épais autour de la source consommée ; la
+  distance qui compte est celle de trajet **par le flux**).
+- **Ce qui est à nous**, tout le reste : leur modèle est **un seul tube** élastique (advection-dispersion, décroissance,
+  libération unique) ; il n'a ni graphe ni loi d'adaptation `dD/dt = f(|Q|) - D` ; il n'y a **aucune simulation sur un
+  réseau**, aucune durée de persistance chiffrée, aucun chiffre pour deux stimuli (le **supplément, Fig. S8, n'a pas été
+  lu**). Le couplage « agent vers croissance des tubes » sur un graphe est donc à nous : on y a mis la saturation de
+  l'article, appliquée à la **cible** de la loi d'adaptation de Tero au lieu du module d'Young d'un tube.
+- **Ce qui n'a pas été lu** : le supplément de Kramar et Alim ; les symboles de leurs équations 1 à 4 (à comparer à
+  l'image de la page avant de s'y fier). Bhattacharyya et al. (2023) n'ont **pas d'agent** et leurs exposants non
+  entiers sont interdits ici : non employé.
+
+### Le modèle
+
+Là où l'agent est présent, la cible de l'adaptation d'un tube grandit :
+
+```text
+D <- D + h * ((1 + α * σ(c_e)) * f(|Q|) - D)        puis le plancher,       σ(c) = c / (c_0 + c)
+```
+
+`f` est la loi du pas (linéaire `|Q|` ou sigmoïde `Q²/(1+Q²)`, celle de la partie 1R), `c_e` la moyenne des
+concentrations des deux bouts de l'arête, `α >= 0` la force, `c_0 > 0` la saturation. **Sans flux, aucun effet** : un
+tube que le flux ne traverse pas s'amincit comme avant, agent ou pas ; avec `α = 0` on retrouve **les mêmes bits** que
+les tubes sans agent. Le pas : les flux avec les conductivités d'avant, le transport de 2T avec ces flux, puis les
+conductivités mises à jour avec les concentrations **d'avant le transport** (l'état suivant ne dépend que de l'état
+d'avant ; un apport n'agit sur les tubes qu'au pas suivant). Les deux familles de l'étape 1 sont servies par la même
+fonction (`Memoire::avancer`) : une source et un puits (le cœur, débit 1, loi linéaire dans `lancer`) ou les nourritures
+tirées par paire (1R, avec sa loi). Un **stimulus** est un apport d'agent en un nœud, d'un débit donné, pendant une
+plage de pas `[début ; fin[`.
+
+### Les directives et les sorties
+
+`agent <alpha> <c0> <kappa> <k>` (une fois) et `stimulus <x> <y> <etage> <debit> <debut> <fin>` (zéro à seize fois) dans
+`lancer`, avec les directives des tubes ou d'un réseau ; l'état s'écrit sous l'étiquette `PHYSAR03` (le graphe, la
+famille, l'alimentation, la loi, le pas, les quatre nombres de la mémoire, les stimuli, les conductivités et les
+concentrations finales, le générateur) ; le CSV gagne une colonne `masse` ; l'aperçu est celui de 2T (la tache d'agent
+sur les tubes). `scenarios/souvenir.txt` en est l'exemple.
+
+### Ce qu'on mesure
+
+L'**écart d'empreinte** `E` : sur une grille de 15 × 11 (huit voisins), source `(1, 5)` et puits `(13, 5)`, la
+différence entre les conductivités moyennes de la moitié du stimulus et de l'autre moitié, avec stimulus **moins** la
+même chose pour un **témoin de même graine** sans stimulus. Son **seuil est `0.01`, fixé avant la campagne**. La
+**sonde** pose un flux de 1 en `(7, 5)` (puits en `(13, 5)`) sur les conductivités gelées et dit quelle part part du
+côté de l'ancien stimulus : c'est ce qui remplace « la migration » du plan, car **notre modèle n'a pas de front qui
+avance**. Toutes les valeurs viennent de 50 graines (101 à 150), autres que celles des tests
+(`references/etape-2m-valeurs.md`).
+
+### Ce que la partie 2M fait voir (et ce qui ne tient pas)
+
+Réglage standard : sigmoïde, `I0 = 3`, `α = 8`, `c_0 = 1`, `κ = 0.1`, `k = 0.2`, stimulus de débit 2 en `(7, 2)` sur 100
+pas.
+
+- **L'empreinte se forme du côté du stimulus** : `E` moyen `+0.089` à la fin du stimulus, positif pour chaque graine
+  (`+0.059` au pire) ; l'autre moitié ne grossit pas (`F_B` n'est jamais positif).
+- **Sous la loi sigmoïde, elle tient, et le réseau tombe sur un état stable** : `E = +0.0366` à +300 pas, **la même
+  valeur** à +1000 et à +3000 (l'écart ne dépasse pas `2e-4`) ; `96 %` des graines restent au-dessus du seuil, les
+  autres gardent un écart positif plus faible. C'est la **bistabilité** de la loi sigmoïde : un détour que l'agent a
+  fait passer au-dessus de son seuil de survie continue de porter du flux quand l'agent est parti (il ne reste de
+  l'agent que `0.005` de masse à +300 ; effacé au pas 100, le résultat moyen est le même). C'est le point le plus proche
+  de l'« anneau de tubes épais » de l'article : **en esprit seulement**, aucun chiffre publié n'est visé.
+- **Sous la loi linéaire, elle s'efface** (le résultat négatif) : le réseau n'a qu'un équilibre (le plus court chemin) ;
+  `E` passe de `+0.037` à `+0.013` en 200 pas puis sous le seuil (`+0.007` à +300), `+0.0001` à +1000, **presque
+  indépendamment de la graine**. Une très grande force (`α = 30`) ne change pas la fin (`+0.025` à +1000). Si l'agent
+  disparaît lentement (`k = 0.01`), l'empreinte le suit, et s'efface avec lui.
+- **Un stimulus donné sur un réseau déjà convergé ne laisse rien** (`|E| <= 5e-5` à +300) : le flux ne passe plus près.
+- **Où part le flux d'une nouvelle source** : avec l'ancien stimulus en haut, `haut - bas` de la sonde vaut `+0.72` en
+  moyenne (positif pour chaque graine, `+0.16` au pire), contre `+0.01` (de `-0.33` à `+0.33`) pour le témoin et `-0.66`
+  pour le stimulus symétrique. Une graine isolée peut donner moins (`+0.15`).
+- **Deux stimuli** : du **même côté** ils ne s'ajoutent pas en intensité (`F_A` `+7 %` ou `-7 %` selon l'écartement)
+  mais rendent l'empreinte plus régulière ; de **côtés opposés** ils **se partagent** la même réserve de tubes épais
+  (`F_A` et `F_B` valent chacun la moitié de celui d'un stimulus seul ; l'écart `E` s'annule en moyenne, la sonde
+  choisit un côté au hasard). **Un second stimulus donné tard ne laisse rien de son côté.** Aucun chiffre de l'article
+  n'est visé.
+- **Ce qui ne tient pas** : l'empreinte linéaire (le cœur) ; l'empreinte sur un réseau déjà convergé ; l'empreinte qui
+  grossit avec le nombre de stimuli ; la mémoire de deux stimuli opposés (ils se partagent) ; et, pour 4 % des graines,
+  même la sigmoïde (`E` reste sous le seuil).
+
+### Ce que cette partie n'établit pas
+
+- **Aucune valeur de l'article n'est retrouvée** : ni le facteur 2 de dilatation, ni les 45 minutes, ni la persistance
+  (310 minutes) ; leur modèle est un tube, le nôtre un graphe, et nos pas de temps n'ont aucun rapport avec leurs
+  minutes.
+- **Le mécanisme de la mémoire sous la sigmoïde est la bistabilité de la loi de Tero 2010**, pas un mécanisme de
+  l'article : l'agent ne fait que pousser un tube au-delà de son seuil. Une autre loi de croissance (une sigmoïde à `γ =
+  1,8` que `powf` interdit, une autre saturation) donnerait d'autres durées.
+- **Le réglage standard est choisi après un balayage** ; l'empreinte dépend fortement de `α` (`+0.0063` à `α = 1`,
+  `+0.0366` à `α = 8`) et un peu du voisinage (la grille à quatre voisins en garde moins).
+- **Un seul banc** (15 × 11, un étage, un stimulus de débit 2 en `(7, 2)`), **sous Windows seulement** ; la CI rejouera
+  sous Linux (les opérations sont `+ - * /`, donc les mêmes bits). Les seuils des tests viennent de 50 graines : le pire
+  des 50 n'est pas une borne pour d'autres graines (une graine des tests est tombée sous ce pire).
+- **Le supplément de l'article, les durées réelles et les tubes d'un vrai blob** : non lus, non comparés. Aucune mesure
+  n'a été faite sur des tubes de diamètres variables : `D` est ici une conductivité sans dimension.
